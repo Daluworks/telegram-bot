@@ -25,6 +25,7 @@ import {
   type DecodedEvent,
 } from "../stellar/decode.js";
 import { groupDigestEvents } from "./digest-grouping.js";
+import { buildSampleEvents } from "./samples.js";
 import type { StellarConfig } from "../config.js";
 import {
   EXPLORER_BUTTON_TEXT,
@@ -717,62 +718,56 @@ export function formatFallbackEvent(
 
 /**
  * Generate a channel preview message for on-demand preview commands.
- * Shows a sample notification and current link preview settings for the specified contract.
+ * Shows a sample notification and current link preview settings for the specified contract or event.
+ * If an unknown event or target is requested, returns a usage message listing valid names.
  */
-export function previewMessage(config: StellarConfig & { linkPreviewMarket?: boolean; linkPreviewSquad?: boolean }, target = "market"): string {
-  const isSquad = target.trim().toLowerCase() === "squad";
-  const linkPreviewEnabled = isSquad
-    ? config.linkPreviewSquad ?? false
-    : config.linkPreviewMarket ?? false;
+export function previewMessage(
+  config: StellarConfig & { linkPreviewMarket?: boolean; linkPreviewSquad?: boolean },
+  target = "market",
+): string {
+  const normalized = target.trim().toLowerCase();
+  const samples = buildSampleEvents(config);
 
-  const settingsLine = `Link previews: ${linkPreviewEnabled ? "enabled" : "disabled"}`;
-
-  if (isSquad) {
-    const sampleEvent: DecodedEvent = {
-      source: "squad",
-      contractId: config.squadContractId,
-      version: "v1",
-      ledger: 1000000,
-      txHash: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-      at: Math.floor(Date.now() / 1000),
-      eventId: "1000000-1",
-      eventType: "contract",
-      transactionIndex: 0,
-      operationIndex: 0,
-      inSuccessfulContractCall: true,
-      payload: {
-        name: "market_created",
-        marketId: 1,
-        question: "Will Stellar process 1M Soroban operations in 24 hours?",
-        captain: "GDZCB3D6JXIJCALSXQELCS6YUEWJWG5DFXQK5PJ5I7MWI6KVMQJBC5DLPKZI",
-        feeBps: 100,
-        deadline: 1770000000,
-      },
-    };
+  if (normalized === "squad") {
+    const linkPreviewEnabled = config.linkPreviewSquad ?? false;
+    const settingsLine = `Link previews: ${linkPreviewEnabled ? "enabled" : "disabled"}`;
+    const sampleEvent = samples["market_created"];
     const formatted = formatEvent({ ...config, channelPreviewMode: false }, sampleEvent) ?? "";
     return `${NOTIFICATION_MD.channelPreviewSquad}\n${settingsLine}\n\n${formatted}`;
   }
 
-  const sampleEvent: DecodedEvent = {
-    source: "market",
-    contractId: config.marketContractId,
-    version: "v1",
-    ledger: 1000000,
-    txHash: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-    at: Math.floor(Date.now() / 1000),
-    eventId: "1000000-0",
-    eventType: "contract",
-    transactionIndex: 0,
-    operationIndex: 0,
-    inSuccessfulContractCall: true,
-    payload: {
-      name: "claim_created",
-      claimId: 1,
-      category: "crypto",
-      creator: "GBMGZ3D6JXIJCALSXQELCS6YUEWJWG5DFXQK5PJ5I7MWI6KVMQJBC5DLPKZI",
-    },
-  };
-  const formatted = formatEvent({ ...config, channelPreviewMode: false }, sampleEvent) ?? "";
-  return `${NOTIFICATION_MD.channelPreviewMarket}\n${settingsLine}\n\n${formatted}`;
+  if (normalized === "market") {
+    const linkPreviewEnabled = config.linkPreviewMarket ?? false;
+    const settingsLine = `Link previews: ${linkPreviewEnabled ? "enabled" : "disabled"}`;
+    const sampleEvent = samples["claim_created"];
+    const formatted = formatEvent({ ...config, channelPreviewMode: false }, sampleEvent) ?? "";
+    return `${NOTIFICATION_MD.channelPreviewMarket}\n${settingsLine}\n\n${formatted}`;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(samples, normalized)) {
+    const sampleEvent = samples[normalized as keyof typeof samples];
+    const isSquad = sampleEvent.source === "squad";
+    const linkPreviewEnabled = isSquad
+      ? config.linkPreviewSquad ?? false
+      : config.linkPreviewMarket ?? false;
+    const settingsLine = `Link previews: ${linkPreviewEnabled ? "enabled" : "disabled"}`;
+    const header = isSquad
+      ? NOTIFICATION_MD.channelPreviewSquad
+      : NOTIFICATION_MD.channelPreviewMarket;
+    const formatted = formatEvent({ ...config, channelPreviewMode: false }, sampleEvent) ?? "";
+    return `${header}\n${settingsLine}\n\n${formatted}`;
+  }
+
+  const validNames = Object.keys(samples)
+    .sort()
+    .map((name) => escapeMd(name))
+    .join(", ");
+  return (
+    `Unknown preview event: \`${escapeMd(clip(target, 40))}\`\n\n` +
+    `Usage: \`/preview <event_name>\`\n` +
+    `Valid names:\n${validNames}\n\n` +
+    `Shortcuts: \`market\`, \`squad\``
+  );
 }
+
 
