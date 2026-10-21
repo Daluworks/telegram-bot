@@ -38,6 +38,19 @@ import {
   NOTIFICATION_MD,
   NOTIFICATION_PLAIN,
 } from "../i18n.js";
+import {
+  highlightLevel,
+  highlightMarker,
+  prefixFirstLine,
+  type HighlightThresholds,
+} from "./highlights.js";
+export {
+  highlightLevel,
+  highlightMarker,
+  prefixFirstLine,
+  type HighlightLevel,
+  type HighlightThresholds,
+} from "./highlights.js";
 
 /** Telegram's MarkdownV2 reserved set. All of it must be escaped, everywhere. */
 const MDV2_RESERVED = /[_*[\]()~`>#+\-=|{}.!\\]/g;
@@ -532,16 +545,30 @@ export function formatEvent(
   config: StellarConfig & {
     channelPreviewMode?: boolean;
     notificationCategories?: readonly string[];
+    highlightThresholds?: HighlightThresholds;
     nowMs?: number;
   },
   event: DecodedEvent,
-  nowMs?: number,
+  nowMsOrThresholds?: number | HighlightThresholds,
 ): string | null {
   if (!eventAllowedByCategory(config, event)) return null;
+  const nowMs = typeof nowMsOrThresholds === "number" ? nowMsOrThresholds : undefined;
+  const thresholds =
+    typeof nowMsOrThresholds === "object" && nowMsOrThresholds !== null
+      ? nowMsOrThresholds
+      : undefined;
   const currentMs = nowMs ?? config.nowMs ?? (event?.at && event.at > 0 ? event.at * 1000 : Date.now());
   try {
-    const head = headline(event, currentMs);
+    let head = headline(event, currentMs);
     if (head === null) return null;
+    const effectiveThresholds = thresholds ?? config.highlightThresholds;
+    if (effectiveThresholds !== undefined) {
+      const level = highlightLevel(event, effectiveThresholds);
+      const marker = highlightMarker(level, effectiveThresholds);
+      if (marker) {
+        head = prefixFirstLine(head, marker);
+      }
+    }
     const body = `${head}\n${footer(config, event)}`;
     if (config.channelPreviewMode) {
       return `${NOTIFICATION_MD.previewModePrefix}\n${body}`;
@@ -721,14 +748,27 @@ function clipPlainText(text: string, max = MAX_PLAIN_TEXT_LENGTH): string {
  * a minimal bounded line rather than crashing the notifier.
  */
 export function formatPlainTextEvent(
-  config: StellarConfig & { nowMs?: number },
+  config: StellarConfig & { highlightThresholds?: HighlightThresholds; nowMs?: number },
   event: DecodedEvent,
-  nowMs?: number,
+  nowMsOrThresholds?: number | HighlightThresholds,
 ): string | null {
+  const nowMs = typeof nowMsOrThresholds === "number" ? nowMsOrThresholds : undefined;
+  const thresholds =
+    typeof nowMsOrThresholds === "object" && nowMsOrThresholds !== null
+      ? nowMsOrThresholds
+      : undefined;
   const currentMs = nowMs ?? config.nowMs ?? (event?.at && event.at > 0 ? event.at * 1000 : Date.now());
   try {
-    const head = plainHeadline(event, currentMs);
+    let head = plainHeadline(event, currentMs);
     if (head === null) return null;
+    const effectiveThresholds = thresholds ?? config.highlightThresholds;
+    if (effectiveThresholds !== undefined) {
+      const level = highlightLevel(event, effectiveThresholds);
+      const marker = highlightMarker(level, effectiveThresholds);
+      if (marker) {
+        head = prefixFirstLine(head, marker);
+      }
+    }
     const body = `${head}\n${plainFooter(config, event)}`.trim();
     if (!body) return minimalPlainTextEvent(event);
     return clipPlainText(body);
