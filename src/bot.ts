@@ -46,6 +46,15 @@ import {
 import { helpDetailMessage } from "./commands/help-detail.js";
 import { aboutMessage } from "./commands/about.js";
 export { helpDetailMessage, COMMAND_DETAILS, type CommandDetail } from "./commands/help-detail.js";
+import { handlePingCommand } from "./commands/ping.js";
+export {
+  handlePingCommand,
+  pingCommand,
+  pongMessage,
+  formatPong,
+  type PingDeps,
+  type Clock,
+} from "./commands/ping.js";
 import {
   handleBroadcastCallback,
   registerBroadcastHandlers,
@@ -62,6 +71,7 @@ export const COMMANDS = [
   { command: "contracts", description: COMMAND_DESCRIPTIONS.contracts, operatorOnly: false },
   { command: "health", description: COMMAND_DESCRIPTIONS.health, operatorOnly: false },
   { command: "preview", description: COMMAND_DESCRIPTIONS.preview, operatorOnly: false },
+  { command: "ping", description: COMMAND_DESCRIPTIONS.ping, operatorOnly: false },
   { command: "pause", description: COMMAND_DESCRIPTIONS.pause, operatorOnly: true },
   { command: "resume", description: COMMAND_DESCRIPTIONS.resume, operatorOnly: true },
 ] as const;
@@ -660,7 +670,7 @@ export interface BotDeps {
  *   id (stored as a number in grammy's ctx.chat.id) and its string form are
  *   compared so that negative group ids such as -1001234567890 match correctly.
  */
-function isChatAllowed(allowedChatIds: readonly string[] | undefined, chatId: number): boolean {
+export function isChatAllowed(allowedChatIds: readonly string[] | undefined, chatId: number): boolean {
   // Hand-built configs (tests, embedders) may omit the list: treat it as open.
   if (!allowedChatIds || allowedChatIds.length === 0) return true;
   const asString = String(chatId);
@@ -803,6 +813,10 @@ export function registerCommandHandlers(
       const spaceIndex = text.indexOf(" ");
       const arg = spaceIndex !== -1 ? text.slice(spaceIndex + 1).trim() : "";
       await ctx.reply(previewMessage(config, arg || "market"), TELEGRAM_OPTIONS);
+    },
+
+    ping: async (ctx) => {
+      await handlePingCommand(ctx, { config });
     },
 
     pause: async (ctx) => {
