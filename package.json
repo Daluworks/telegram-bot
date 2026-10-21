@@ -29,6 +29,7 @@
     "mock:stack:down": "docker compose -f docker-compose.mock.yml down -v",
     "audit": "tsx src/audit-cli.ts",
     "audit:report": "tsx src/audit-cli.ts",
+    "audit:check": "tsx src/audit-check-cli.ts",
     "seed:cursor": "tsx src/dev/seedCursor.ts",
     "cursor": "node dist/cursor-cli.js",
     "replay": "tsx src/replay-cli.ts",
