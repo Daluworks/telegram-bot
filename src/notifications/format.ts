@@ -29,6 +29,7 @@ import { appUrlFor } from "./app-links.js";
 import { iconForCategory } from "./category-icons.js";
 import { groupDigestEvents } from "./digest-grouping.js";
 import { confidenceIndicator } from "./confidence.js";
+import { sanitizeUserText } from "./sanitize.js";
 import { settlementLines } from "./settlement.js";
 import { formatDeadline } from "./time.js";
 import type { StellarConfig } from "../config.js";
@@ -397,7 +398,7 @@ function headline(event: DecodedEvent, nowMs?: number): string | null {
     // ── mimir-market ────────────────────────────────────────────────────────
     case "claim_created": {
       const icon = iconForCategory(p.category);
-      const cat = escapeMd(clip(p.category));
+      const cat = escapeMd(clip(sanitizeUserText(p.category)));
       const formattedCategory = cat ? `${icon} ${cat}` : icon;
       return NOTIFICATION_MD.claimCreated(
         String(p.claimId),
@@ -418,7 +419,7 @@ function headline(event: DecodedEvent, nowMs?: number): string | null {
         String(p.claimId),
         escapeMd(winnerSideLabel(p.winnerSide)),
         escapeMd(confidenceIndicator(p.confidence)),
-        p.summary ? escapeMd(clip(p.summary)) : null,
+        p.summary ? escapeMd(clip(sanitizeUserText(p.summary))) : null,
       );
 
     case "claim_cancelled":
@@ -458,7 +459,7 @@ function headline(event: DecodedEvent, nowMs?: number): string | null {
     case "market_created":
       return NOTIFICATION_MD.marketCreated(
         String(p.marketId),
-        escapeMd(clip(p.question)),
+        escapeMd(clip(sanitizeUserText(p.question))),
         who(p.captain),
         escapeMd(String(p.feeBps)),
         escapeMd(formatDeadline(p.deadline, nowMs)),
@@ -612,7 +613,7 @@ function plainHeadline(event: DecodedEvent, nowMs?: number): string | null {
     // ── mimir-market ────────────────────────────────────────────────────────
     case "claim_created": {
       const icon = iconForCategory(p.category);
-      const cat = clip(p.category);
+      const cat = clip(sanitizeUserText(p.category));
       const formattedCategory = cat ? `${icon} ${cat}` : icon;
       return NOTIFICATION_PLAIN.claimCreated(p.claimId, formattedCategory, plainWho(p.creator));
     }
@@ -629,7 +630,7 @@ function plainHeadline(event: DecodedEvent, nowMs?: number): string | null {
         p.claimId,
         winnerSideLabel(p.winnerSide),
         confidenceIndicator(p.confidence),
-        p.summary ? clip(p.summary) : null,
+        p.summary ? clip(sanitizeUserText(p.summary)) : null,
       );
 
     case "claim_cancelled":
@@ -669,7 +670,7 @@ function plainHeadline(event: DecodedEvent, nowMs?: number): string | null {
     case "market_created":
       return NOTIFICATION_PLAIN.marketCreated(
         p.marketId,
-        clip(p.question),
+        clip(sanitizeUserText(p.question)),
         plainWho(p.captain),
         String(p.feeBps),
         formatDeadline(p.deadline, nowMs),
