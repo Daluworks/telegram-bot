@@ -160,6 +160,5 @@ The REPL context is preloaded with:
 - `src/dev/repl.ts` — interactive developer REPL with preloaded decoders, formatters, and mock helpers.
 - `tests/` — Node built-in test runner suites compiled against `dist/`.
 - `scripts/tsx-dist-loader.mjs` — ESM loader that maps `dist/*.js` → `src/*.ts` for `test:fast`.
-- `docs/quickstart-mock.md` — five-minute quickstart using the local mock RPC.
 - `docs/contributor-fixtures.md` — credential-free fixture guide and failure modes.
 - `.env.example` — the documented runtime settings (not required for testing).
