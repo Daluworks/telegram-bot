@@ -711,6 +711,18 @@ export function registerCommandHandlers(
   const pause = deps.pause ?? (() => "stopped");
   const resume = deps.resume ?? (() => "stopped");
 
+  const clock = deps.now ?? deps.clock;
+  const rateLimiter =
+    deps.rateLimiter ??
+    new CommandRateLimiter(clock ? { now: clock } : {});
+  const sampler =
+    deps.rateLimitSampler ??
+    new LogSampler({
+      maxPerWindow: 1,
+      windowMs: 60_000,
+      now: clock ?? rateLimiter.now,
+    });
+
   /**
    * Gate for commands that expose deployment details. Requests from
    * unapproved chats are silently ignored: an error reply would leak the
@@ -840,7 +852,25 @@ export function registerCommandHandlers(
   };
 
   for (const { command } of COMMANDS) {
-    bot.command(command, handlers[command]);
+    const rawHandler = handlers[command];
+    bot.command(command, async (ctx) => {
+      if (!isOperator(ctx, config)) {
+        const chatId = ctx.chat?.id ?? ctx.from?.id;
+        if (chatId !== undefined) {
+          if (!rateLimiter.consume(chatId)) {
+            const sample = sampler.record(String(chatId));
+            if (sample.log) {
+              const repeats = formatSuppressedRepeats(sample.suppressed, sampler.windowMs);
+              console.warn(
+                `[bot] rate limit exceeded for chat ${chatId}, ignoring /${command}${repeats}`,
+              );
+            }
+            return;
+          }
+        }
+      }
+      await rawHandler(ctx);
+    });
   }
   if (!("on" in bot) && typeof bot.callbackQuery === "function") {
     bot.callbackQuery(
