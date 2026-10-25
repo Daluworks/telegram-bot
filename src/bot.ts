@@ -3,10 +3,11 @@
  * poller uses.
  *
  * Slash commands live in `src/commands/`, one self-contained module per
- * command: each declares its own name, visibility, authorization and handler,
- * and registers itself through `defineCommand`. This file only builds the bot,
- * walks the registry, and owns the notifier the poller sends through — so
- * adding a command no longer means editing this file.
+ * command (see `CommandModule` in `src/commands/types.ts`): each declares its
+ * own name, description, visibility, authorization and handler, and
+ * `src/commands/index.ts` lists them in menu order. This file only builds the
+ * bot, walks that registry, and applies the shared gates — so adding a command
+ * no longer means editing this file.
  *
  * The bot half is deliberately thin. It answers public status and contract
  * commands plus operator pause/resume controls. Operator controls only change
@@ -14,10 +15,11 @@
  * state. All chain logic lives in `src/poller.ts` and `src/stellar/`.
  */
 
-import { Bot, type Context, type CommandContext } from "grammy";
+import { Bot, type CommandContext, type Context } from "grammy";
 
 import { safeErrorMessage } from "./notifications/format.js";
-import { type BotConfig } from "./config.js";
+import type { BotConfig } from "./config.js";
+import { formatSuppressedRepeats, LogSampler } from "./log-sampler.js";
 
 // Importing the catalogue registers every command module as a side effect.
 import {
@@ -25,14 +27,21 @@ import {
   CALLBACK_PAUSE_CONFIRM,
   chatAllowed,
   commandMetadata,
+  isOperator,
   operatorAllowed,
   registeredCommands,
   visibleCommandMetadata,
   type CommandDeps,
   type CommandModule,
 } from "./commands/index.js";
-import { handlePauseConfirmCallback, registerCallbackHandlers } from "./callbacks.js";
+import {
+  handlePauseConfirmCallback,
+  registerCallbackHandlers,
+  validatePauseConfirmData,
+} from "./callbacks.js";
 import { registerBroadcastHandlers } from "./commands/broadcast.js";
+import { pauseConfirmKeyboard } from "./commands/keyboards.js";
+import { CommandRateLimiter } from "./commands/rate-limit.js";
 import {
   canSendHint,
   closestCommand,
@@ -45,7 +54,6 @@ import {
 // implementations live with the commands.
 
 export { previewMessage } from "./notifications/format.js";
-export { clearHintState } from "./commands/unknown.js";
 export { helpDetailMessage, COMMAND_DETAILS, type CommandDetail } from "./commands/help-detail.js";
 export {
   CALLBACK_PAUSE_CANCEL,
@@ -92,6 +100,98 @@ export {
   BroadcastStore,
   sendBroadcast,
 } from "./commands/broadcast.js";
+export { clearHintState } from "./commands/unknown.js";
+
+/** Older names for the pause-confirmation helpers, kept for existing imports. */
+export const validatePauseCallbackData = validatePauseConfirmData;
+export const pauseConfirmationKeyboard = pauseConfirmKeyboard;
+
+/**
+ * Telegram bot tokens have the shape `<digits>:<35+ url-safe chars>`.
+ * Values pasted from dashboards frequently arrive wrapped in quotes or with
+ * trailing whitespace/newlines, which only surface as a `getMe` failure at
+ * startup. Validate the shape up front and name the problem without ever
+ * echoing the token (or any part of it) into a message or log.
+ */
+export type BotTokenShapeProblem =
+  | "empty"
+  | "surrounding-quotes"
+  | "whitespace"
+  | "missing-colon"
+  | "bad-prefix"
+  | "bad-suffix"
+  | "wrong-shape";
+
+export interface BotTokenShapeResult {
+  ok: boolean;
+  problem?: BotTokenShapeProblem;
+  message?: string;
+}
+
+const BOT_TOKEN_SHAPE = /^\d+:[A-Za-z0-9_-]{35,}$/;
+
+/**
+ * Validate a `BOT_TOKEN` value without ever including the token (or any
+ * substring of it) in the returned message. The messages are intentionally
+ * generic so they are safe to log and to surface in a startup error.
+ *
+ * Exported for embedders and for callers that build a bot from their own
+ * configuration; `loadConfig` applies the same rules at startup, so
+ * `createBot` does not reject placeholder tokens.
+ */
+export function validateBotTokenShape(raw: unknown): BotTokenShapeResult {
+  if (typeof raw !== "string" || raw.length === 0) {
+    return {
+      ok: false,
+      problem: "empty",
+      message: "BOT_TOKEN is empty; expected <digits>:<35+ url-safe chars>.",
+    };
+  }
+
+  // Surrounding quotes are the most common paste artefact.
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith("'") && raw.endsWith("'"))
+  ) {
+    return {
+      ok: false,
+      problem: "surrounding-quotes",
+      message:
+        "BOT_TOKEN is wrapped in quotes; remove the surrounding quotes and retry.",
+    };
+  }
+
+  // Any whitespace anywhere (leading, trailing, or embedded) is rejected.
+  if (/\s/.test(raw)) {
+    return {
+      ok: false,
+      problem: "whitespace",
+      message:
+        "BOT_TOKEN contains whitespace (leading, trailing, or embedded); trim it and retry.",
+    };
+  }
+
+  if (!raw.includes(":")) {
+    return {
+      ok: false,
+      problem: "missing-colon",
+      message: "BOT_TOKEN is missing the ':' separator; expected <digits>:<35+ url-safe chars>.",
+    };
+  }
+
+  if (!BOT_TOKEN_SHAPE.test(raw)) {
+    return {
+      ok: false,
+      problem: "wrong-shape",
+      message:
+        "BOT_TOKEN has the wrong shape; expected <digits>:<35+ url-safe chars>.",
+    };
+  }
+
+  return { ok: true };
+}
+
+// ── Command registry ─────────────────────────────────────────────────────────
 
 /**
  * Shared metadata for handlers, help, and Telegram's command menu.
@@ -101,39 +201,47 @@ export {
  */
 export const COMMANDS = commandMetadata();
 
-/** Legacy alias kept for callers/tests: accepts only the pause confirm/cancel payloads. */
-export function validatePauseCallbackData(
-  data: unknown,
-): typeof CALLBACK_PAUSE_CONFIRM | typeof CALLBACK_PAUSE_CANCEL | null {
-  return data === CALLBACK_PAUSE_CONFIRM || data === CALLBACK_PAUSE_CANCEL ? data : null;
-}
-
 /** Everything a command handler may need. Kept as an alias for callers/tests. */
 export type BotDeps = CommandDeps;
 
+type CommandRegistrar = {
+  command: (name: string, handler: (ctx: CommandContext<Context>) => Promise<void>) => unknown;
+  callbackQuery?: (filter: string | string[], handler: (ctx: Context) => Promise<void>) => unknown;
+  on?: (filter: "message:entities:bot_command", handler: (ctx: Context) => Promise<void>) => unknown;
+};
+
 /** Register command handlers on a grammy-compatible bot (also useful in tests). */
-export function registerCommandHandlers(
-  bot:
-    | Bot
-    | {
-        command: (name: string, handler: (ctx: CommandContext<Context>) => Promise<void>) => unknown;
-        callbackQuery?: (
-          filter: string | string[],
-          handler: (ctx: Context) => Promise<void>,
-        ) => unknown;
-      },
-  deps: BotDeps,
-): void {
-  const registrar = bot as {
-    command: (name: string, handler: (ctx: CommandContext<Context>) => Promise<void>) => unknown;
-    callbackQuery?: (
-      filter: string | string[],
-      handler: (ctx: Context) => Promise<void>,
-    ) => unknown;
+export function registerCommandHandlers(bot: Bot | CommandRegistrar, deps: BotDeps): void {
+  const registrar = bot as CommandRegistrar;
+
+  const rateLimiter =
+    deps.rateLimiter ?? new CommandRateLimiter(deps.now ? { now: deps.now } : {});
+  const sampler =
+    deps.rateLimitSampler ??
+    new LogSampler({ maxPerWindow: 1, windowMs: 60_000, now: deps.now ?? rateLimiter.now });
+
+  /**
+   * Per-chat token bucket for everyone but the operator. Over-limit commands
+   * are dropped silently; the warning is sampled so a flood cannot flood logs.
+   */
+  const withinRateLimit = (ctx: CommandContext<Context>, command: string): boolean => {
+    if (isOperator(ctx, deps.config)) return true;
+    const chatId = ctx.chat?.id ?? ctx.from?.id;
+    if (chatId === undefined || rateLimiter.consume(chatId)) return true;
+    const sample = sampler.record(String(chatId));
+    if (sample.log) {
+      const repeats = formatSuppressedRepeats(sample.suppressed, sampler.windowMs);
+      console.warn(`[bot] rate limit exceeded for chat ${chatId}, ignoring /${command}${repeats}`);
+    }
+    return false;
   };
 
-  for (const module of registeredCommands()) {
-    registrar.command(module.command, (ctx) => dispatch(module, ctx, deps));
+  const modules = registeredCommands();
+  for (const module of modules) {
+    registrar.command(module.command, async (ctx) => {
+      if (!withinRateLimit(ctx, module.command)) return;
+      await dispatch(module, ctx, deps);
+    });
   }
 
   // The pause confirmation prompt is produced by /pause, so its buttons are
@@ -147,49 +255,13 @@ export function registerCommandHandlers(
       }),
   );
 
-  // ── Unknown-command fallback (private chats only) ──────────────────────
-  // Must be registered AFTER all known commands so grammy's command middleware
-  // matches known ones first. Groups and channels are left silent, and
-  // commands addressed to another bot (/cmd@otherbot) are skipped.
-  const knownCommandNames = COMMANDS.map((c) => c.command);
-  if (typeof (bot as unknown as Partial<Bot>).on !== "function") return;
-
-  (bot as unknown as Bot).on("message:entities:bot_command", async (ctx: Context) => {
-    if (ctx.chat?.type !== "private") return;
-
-    const text = ctx.message?.text ?? "";
-    const entities = ctx.message?.entities ?? [];
-    const cmdEntity = entities.find((e) => e.type === "bot_command" && e.offset === 0);
-    if (!cmdEntity) return;
-
-    // "/status@mybot" → "status@mybot".
-    const raw = text.slice(1, cmdEntity.length);
-    const atIndex = raw.indexOf("@");
-    const cmdName = atIndex === -1 ? raw : raw.slice(0, atIndex);
-    const mention = atIndex === -1 ? null : raw.slice(atIndex + 1);
-
-    if (mention !== null) {
-      const myUsername = (ctx as unknown as { me?: { username?: string } }).me?.username;
-      if (myUsername && mention.toLowerCase() !== myUsername.toLowerCase()) return;
-    }
-
-    if (knownCommandNames.includes(cmdName)) return;
-
-    const chatId = ctx.chat.id;
-    if (!canSendHint(chatId)) return;
-
-    const suggestion = closestCommand(cmdName, knownCommandNames);
-    const reply = unknownCommandReply(cmdName, suggestion);
-
-    try {
-      await ctx.reply(reply);
-      recordHint(chatId);
-    } catch (err) {
-      console.warn(
-        `[bot] unknown-command hint failed: ${safeErrorMessage(err, [deps.config.botToken])}`,
-      );
-    }
-  });
+  if (typeof registrar.on === "function") {
+    registerUnknownCommandFallback(
+      registrar as Required<Pick<CommandRegistrar, "on">>,
+      deps.config,
+      modules.map(({ command }) => command),
+    );
+  }
 }
 
 /**
@@ -209,6 +281,56 @@ function dispatch(
     return Promise.resolve();
   }
   return module.handler(ctx, deps);
+}
+
+/**
+ * Unknown-command hint (private chats only). Registered AFTER all known
+ * commands so grammy's command middleware matches known ones first. Groups and
+ * channels stay silent, and commands addressed to another bot
+ * (`/cmd@otherbot`) are skipped.
+ */
+function registerUnknownCommandFallback(
+  bot: Required<Pick<CommandRegistrar, "on">>,
+  config: BotConfig,
+  knownCommandNames: readonly string[],
+): void {
+  bot.on("message:entities:bot_command", async (ctx: Context) => {
+    if (ctx.chat?.type !== "private") return;
+
+    const text = ctx.message?.text ?? "";
+    const entities = ctx.message?.entities ?? [];
+
+    // Find the first bot_command entity at offset 0.
+    const cmdEntity = entities.find((e) => e.type === "bot_command" && e.offset === 0);
+    if (!cmdEntity) return;
+
+    // Extract the raw command token, e.g. "/status@mybot" → "status@mybot".
+    const raw = text.slice(1, cmdEntity.length);
+    const atIndex = raw.indexOf("@");
+    const cmdName = atIndex === -1 ? raw : raw.slice(0, atIndex);
+    const mention = atIndex === -1 ? null : raw.slice(atIndex + 1);
+
+    // If it targets another bot, ignore.
+    if (mention !== null) {
+      const myUsername = (ctx as unknown as { me?: { username?: string } }).me?.username;
+      if (myUsername && mention.toLowerCase() !== myUsername.toLowerCase()) return;
+    }
+
+    // Already handled by a known-command handler — do nothing.
+    if (knownCommandNames.includes(cmdName)) return;
+
+    // Rate-limit: one hint per chat per HINT_COOLDOWN_MS.
+    const chatId = ctx.chat.id;
+    if (!canSendHint(chatId)) return;
+
+    const reply = unknownCommandReply(cmdName, closestCommand(cmdName, knownCommandNames));
+    try {
+      await ctx.reply(reply);
+      recordHint(chatId);
+    } catch (err) {
+      console.warn(`[bot] unknown-command hint failed: ${safeErrorMessage(err, [config.botToken])}`);
+    }
+  });
 }
 
 export function createBot(deps: BotDeps): Bot {

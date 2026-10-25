@@ -282,8 +282,7 @@ export async function compareEndpoints(opts: CompareOptions): Promise<CompareRes
 
   // ── Validate inputs before any network call ─────────────────────────────
   if (!isValidContractId(opts.contractId)) {
-    const rawContract = typeof opts.contractId === "string" ? opts.contractId : String(opts.contractId ?? "");
-    return { ...base, exitCode: 2, error: `Invalid contract ID: ${rawContract.slice(0, 60)}` };
+    return { ...base, exitCode: 2, error: `Invalid contract ID: ${String(opts.contractId).slice(0, 60)}` };
   }
 
   let budget = opts.budget ?? DEFAULT_BUDGET;
@@ -449,9 +448,7 @@ export function formatCompareResult(result: CompareResult): string {
   lines.push(`Differences: ${result.diffCount} total`);
 
   const byStatus: Record<string, EventDiff[]> = { missing: [], extra: [], differing: [] };
-  for (const d of result.diffs) {
-    (byStatus[d.status] ??= []).push(d);
-  }
+  for (const d of result.diffs) byStatus[d.status]?.push(d);
 
   const show = (status: string, label: string) => {
     const items = byStatus[status] ?? [];
