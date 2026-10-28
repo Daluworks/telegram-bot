@@ -35,6 +35,7 @@ import { formatSquadResolution, renderSquadResolution } from "./squad-resolution
 import type { StellarConfig } from "../config.js";
 import { messagesFor, type Messages } from "../i18n.js";
 import { formatDeadline } from "./time.js";
+import { buildSampleEvents } from "./samples.js";
 import {
   highlightLevel,
   highlightMarker,

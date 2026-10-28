@@ -771,19 +771,6 @@ function collector(profile: Record<string, string>) {
       if (value === undefined) return null;
       return value;
     },
-
-    network(name: string, fallback: StellarNetwork): StellarNetwork {
-      const value = get(name);
-      if (value === undefined) return fallback;
-      const valid: StellarNetwork[] = ["testnet", "mainnet", "futurenet", "custom"];
-      if (!valid.includes(value as StellarNetwork)) {
-        problems.push(
-          `${name} must be one of ${valid.join(", ")}; got "${value}"`,
-        );
-        return fallback;
-      }
-      return value as StellarNetwork;
-    },
   };
 }
 

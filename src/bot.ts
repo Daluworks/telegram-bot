@@ -61,7 +61,6 @@ export {
   contractsKeyboard,
   operatorKeyboard,
   pauseConfirmKeyboard,
-  pauseConfirmKeyboard as pauseConfirmationKeyboard,
   statusKeyboard,
 } from "./commands/keyboards.js";
 export { TELEGRAM_OPTIONS, isChatAllowed, isOperator } from "./commands/runtime.js";
