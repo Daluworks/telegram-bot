@@ -906,6 +906,10 @@ digest on a UTC cadence instead of sending each event immediately:
 - `DIGEST_MAX_PENDING` — maximum pending events retained between scheduled runs
   (default `200`). When full, the oldest pending events are evicted first so
   memory and disk usage remain bounded.
+- **Bounded continuation pages** — when a digest exceeds Telegram's 4096-character
+  message limit, `formatDigestPages` splits it deterministically on complete event
+  summaries (repeating the group header when a multi-event group spans pages) and
+  includes `(page/total)` with the stable total event count in every page header.
 
 Restart behavior:
 

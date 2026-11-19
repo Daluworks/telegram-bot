@@ -86,11 +86,10 @@ import {
 import {
   clip,
   explorerKeyboard,
-  formatDigest,
+  formatDigestPages,
   formatEvent,
   formatPlainTextEvent,
   safeErrorMessage,
-  splitTelegramMessage,
 } from "./notifications/format.js";
 import {
   createDigestCheckpoint,
@@ -1495,9 +1494,8 @@ export function createPoller(deps: PollerDeps) {
           run: async () => {
             const pending = digestCheckpoint.snapshotPending();
             if (pending.length === 0) return;
-            const digestText = formatDigest(pending, { grouped: true });
-            if (!digestText) return;
-            const chunks = splitTelegramMessage(digestText);
+            const chunks = formatDigestPages(pending, { grouped: true });
+            if (chunks.length === 0) return;
             try {
               for (const chunk of chunks) {
                 await sendWithRetry(
