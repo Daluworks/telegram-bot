@@ -115,10 +115,10 @@ Emitted by top-level Node.js error listeners.
 ### Field Bounds
 To protect log aggregators and prevent denial-of-service via massive RPC payloads:
 - **String length truncation**: Any string field value longer than `MAX_LOG_FIELD_CHARS` (`1,000` characters) is truncated to 999 characters and suffixed with an ellipsis (`…`).
-- **Object depth limit**: Deeply nested JSON structures are traversed up to `MAX_FIELD_DEPTH` (`4` levels). Anything deeper is replaced with `"[depth-limit]"`, protecting against circular references.
+- **Object depth limit & circular references**: Deeply nested JSON structures are traversed up to `MAX_FIELD_DEPTH` (`4` levels). Anything deeper is replaced with `"[depth-limit]"`, and circular references encountered during error redaction (`redactError`) are replaced with `"[circular]"`.
 - **BigInt serialization**: `BigInt` values are converted to standard numeric strings (`value.toString()`).
-- **Undefined & Functions**: Object keys whose values are `undefined` or functions are stripped before JSON serialization.
-- **Fail-safe fallback**: If serializing `fields` throws unexpectedly, the logger emits the bare sanitized `msg` string so the process never crashes on logging.
+- **Unsupported & Exotic values**: Symbols and functions are safely replaced with bounded sentinels (`"[unsupported:symbol]"`, `"[unsupported:function]"`), or omitted when undefined.
+- **Fail-safe fallback**: If serializing `fields` throws unexpectedly (e.g., via a throwing property getter), the logger retains the original event level and emits the sanitized `msg` string so polling and the process never terminate on logging.
 
 ### Redaction Rules
 Every log record is redacted before it leaves the process:

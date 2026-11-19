@@ -263,6 +263,18 @@ const consoleSink: LogSink = (level, line) => {
   else console.log(line);
 };
 
+function safeInvokeSink(sink: LogSink, level: LogLevel, line: string, fallbackLine: string): void {
+  try {
+    sink(level, line);
+  } catch {
+    try {
+      consoleSink(level, fallbackLine);
+    } catch {
+      // Never let a sink failure terminate the caller or polling loop.
+    }
+  }
+}
+
 interface LoggerState {
   level: LogLevel;
   format: LogFormat;
@@ -298,6 +310,8 @@ function boundField(text: string): string {
 function sanitize(value: unknown, depth: number): unknown {
   if (typeof value === "string") return boundField(redactLogText(value));
   if (typeof value === "bigint") return value.toString();
+  if (typeof value === "symbol") return "[unsupported:symbol]";
+  if (typeof value === "function") return "[unsupported:function]";
   if (value === null || typeof value !== "object") return value;
   if (depth >= MAX_FIELD_DEPTH) return "[depth-limit]";
   if (Array.isArray(value)) return value.map((item) => sanitize(item, depth + 1));
@@ -313,7 +327,7 @@ function emit(level: LogLevel, component: string, message: string, fields?: LogF
   if (LEVEL_RANK[level] < LEVEL_RANK[state.level]) return;
   const msg = redactLogText(message);
   if (state.format === "text") {
-    state.sink(level, msg);
+    safeInvokeSink(state.sink, level, msg, msg);
     return;
   }
   let line: string;
@@ -328,7 +342,7 @@ function emit(level: LogLevel, component: string, message: string, fields?: LogF
     // Never let a hostile field take the log call (or the caller) down.
     line = msg;
   }
-  state.sink(level, line);
+  safeInvokeSink(state.sink, level, line, msg);
 }
 
 export const Logger = {
