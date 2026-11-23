@@ -179,6 +179,11 @@ export interface StellarConfig {
   squadContractId: string;
   marketContractVersion: string;
   squadContractVersion: string;
+  /**
+   * Configured Soroban RPC endpoint. Used to place requests and check the
+   * network passphrase; latency metrics attribute it to a fixed provider
+   * identity, never to this URL.
+   */
   rpcUrl: string;
   /** Optional operator-configured RPC egress allowlist (hosts, wildcards, or origins). */
   rpcEgressAllowlist?: string[];
