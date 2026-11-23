@@ -55,6 +55,13 @@ Shareable event archives (JSONL captures produced by the archive helpers) can be
 - `HEALTH_STALE_MS`: Marks the health endpoint as degraded if no successful poll completes within this window (e.g., 90000ms).
 - `HEALTH_AUTH_TOKEN`: Optional bearer token for all health/metrics routes. Authorization headers over 4096 UTF-8 bytes (including `Bearer `) are rejected with the same empty `401` as other malformed values.
 
+### Logging
+- `LOG_LEVEL`: Minimum severity emitted (`info` by default).
+- `LOG_FORMAT`: Console format (`text` by default, or `json` for one JSON object per line).
+- `LOG_FILE`: Optional path for a local JSONL operational log. Unset by default; records are appended as redacted JSON lines regardless of `LOG_FORMAT`.
+- `LOG_FILE_MAX_BYTES`: Rotation threshold in bytes (10 MiB by default; invalid values fall back to the default).
+- `LOG_FILE_MAX_FILES`: Total local files retained, including the active file (5 by default, clamped to 1–50). `1` keeps only the active file.
+
 ## Operational Behavior
 
 ### RPC Failures and Rate Limits
@@ -83,8 +90,8 @@ Shareable event archives (JSONL captures produced by the archive helpers) can be
 
 ### Logs
 - Operational outputs are structured and actionable.
-- Diagnostic test output (CI) must not expose bot tokens, chat IDs, or topic IDs in full; regression checks enforce this for log exports.
-- **Redaction**: Bot tokens, private payloads, and destination identifiers (chat IDs and topic IDs) are never logged in full. Logged route references use the same masked form (for example `***1234`) as public diagnostics.
+- **Redaction**: Bot tokens and private payloads are never logged.
+- **Optional file sink**: `LOG_FILE` writes size-rotated JSONL with bounded retention. Writes are serialized with rotation, and disk failures are reported distinctly on stderr without stopping the poller.
 
 ## Deployment & Rollback
 
