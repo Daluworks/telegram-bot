@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Address, Keypair, xdr } from "@stellar/stellar-sdk";
+import { Address, Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 
 import {
   MAX_GENERIC_BYTES_CHARS,
@@ -22,6 +22,7 @@ import {
   MAX_GENERIC_STRING_CHARS,
   MAX_GENERIC_VEC_ITEMS,
   decodeGenericEvent,
+  explainGenericEvent,
   renderGenericScVal,
   renderScVal,
   renderTopics,
@@ -78,11 +79,11 @@ function scI64(n) {
 }
 
 function scTimepoint(n) {
-  return xdr.ScVal.scvTimepoint(new xdr.TimePoint(xdr.Uint64.fromString(String(n))));
+  return xdr.ScVal.scvTimepoint(xdr.Uint64.fromString(String(n)));
 }
 
 function scDuration(n) {
-  return xdr.ScVal.scvDuration(new xdr.Duration(xdr.Uint64.fromString(String(n))));
+  return xdr.ScVal.scvDuration(xdr.Uint64.fromString(String(n)));
 }
 
 function scU128(n) {
@@ -90,7 +91,7 @@ function scU128(n) {
   const lo = bn & 0xffff_ffff_ffff_ffffn;
   const hi = bn >> 64n;
   return xdr.ScVal.scvU128(
-    new xdr.UInt128Parts({
+    new xdr.Uint128Parts({
       hi: xdr.Uint64.fromString(String(hi)),
       lo: xdr.Uint64.fromString(String(lo)),
     }),
@@ -124,7 +125,7 @@ function scI128(n) {
 function scU256(n) {
   const bn = BigInt(n);
   return xdr.ScVal.scvU256(
-    new xdr.UInt256Parts({
+    new xdr.Uint256Parts({
       hiHi: xdr.Uint64.fromString("0"),
       hiLo: xdr.Uint64.fromString("0"),
       loHi: xdr.Uint64.fromString("0"),
@@ -216,6 +217,11 @@ test("scvDuration renders with duration: tag", () => {
 
 test("scvU128 renders with u128: tag", () => {
   assert.equal(renderGenericScVal(scU128(50000000)), "u128:50000000");
+  // Large integer beyond safe JS integer range renders as decimal string
+  assert.equal(
+    renderGenericScVal(scU128("123456789012345678901234567890")),
+    "u128:123456789012345678901234567890",
+  );
 });
 
 test("scvI128 renders with i128: tag", () => {
@@ -225,6 +231,11 @@ test("scvI128 renders with i128: tag", () => {
 
 test("scvU256 renders with u256: tag", () => {
   assert.equal(renderGenericScVal(scU256(12345)), "u256:12345");
+  // Large integer renders as decimal string
+  assert.equal(
+    renderGenericScVal(nativeToScVal(999999999999999999999999999999n, { type: "u256" })),
+    "u256:999999999999999999999999999999",
+  );
 });
 
 test("scvI256 renders with i256: tag", () => {
@@ -272,12 +283,39 @@ test("native JS types render with appropriate type tags", () => {
   assert.equal(renderGenericScVal(null), "void");
   assert.equal(renderGenericScVal(undefined), "void");
   assert.equal(renderGenericScVal(42), "number:42");
+  assert.equal(renderGenericScVal(3.14), "number:3.14");
   assert.equal(renderGenericScVal(100n), "bigint:100");
+  assert.equal(
+    renderGenericScVal(123456789012345678901234567890n),
+    "bigint:123456789012345678901234567890",
+  );
   assert.equal(renderGenericScVal("regular string"), 'string:"regular string"');
   assert.equal(renderGenericScVal(TEST_G_ADDR), `address:${TEST_G_ADDR}`);
   assert.equal(renderGenericScVal(Buffer.from([0x01, 0x02])), "bytes:0102");
   assert.equal(renderGenericScVal([1, 2]), "vec:[number:1, number:2]");
   assert.equal(renderGenericScVal({ a: 1 }), "map:{a: number:1}");
+});
+
+test("numeric safety: unsafe and non-finite native numbers render as number:malformed", () => {
+  assert.equal(renderGenericScVal(NaN), "number:malformed");
+  assert.equal(renderGenericScVal(Infinity), "number:malformed");
+  assert.equal(renderGenericScVal(-Infinity), "number:malformed");
+  assert.equal(renderGenericScVal(1e25), "number:malformed");
+  assert.equal(renderGenericScVal(9007199254740993), "number:malformed");
+});
+
+test("numeric safety: ScVal integer instances with unsafe numbers render as malformed", () => {
+  const unsafeScVal = {
+    type: "scvU64",
+    value: 1e25,
+  };
+  assert.equal(renderGenericScVal(unsafeScVal), "u64:malformed");
+
+  const nonFiniteScVal = {
+    type: "scvU128",
+    value: NaN,
+  };
+  assert.equal(renderGenericScVal(nonFiniteScVal), "u128:malformed");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -482,6 +520,32 @@ test("decodeGenericEvent never throws on completely empty, null or corrupt input
   assert.equal(corrupt.value, "malformed");
 });
 
+test("decodeGenericEvent rejects lossy numeric coercion in ledger and indices", () => {
+  const unsafeMeta = decodeGenericEvent({
+    contractId: TEST_C_ADDR,
+    ledger: 1e25,
+    transactionIndex: "9007199254740993",
+    operationIndex: 5.5,
+    topic: [scSymbol("test")],
+    value: scVoid(),
+  });
+  assert.equal(unsafeMeta.ledger, 0);
+  assert.equal(unsafeMeta.transactionIndex, null);
+  assert.equal(unsafeMeta.operationIndex, null);
+
+  const safeMeta = decodeGenericEvent({
+    contractId: TEST_C_ADDR,
+    ledger: "12345",
+    transactionIndex: 3,
+    operationIndex: "1",
+    topic: [scSymbol("test")],
+    value: scVoid(),
+  });
+  assert.equal(safeMeta.ledger, 12345);
+  assert.equal(safeMeta.transactionIndex, 3);
+  assert.equal(safeMeta.operationIndex, 1);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. formatGenericEvent Plain-Text Output
 // ─────────────────────────────────────────────────────────────────────────────
@@ -555,4 +619,26 @@ test("formatGenericEvent bounds output length under MAX_GENERIC_NOTIFICATION_LEN
     value: hugeValue,
   });
   assert.ok(formatted.length <= MAX_GENERIC_NOTIFICATION_LENGTH);
+});
+
+test("explainGenericEvent: reports selectedSchema, fieldChecks, and redacts/bounds diagnostics", () => {
+  const fakeBearer = "Bearer " + "x".repeat(40);
+  const ok = explainGenericEvent({
+    id: "1-0",
+    ledger: 100,
+    topic: [scSymbol("transfer")],
+    value: scString(`ok ${fakeBearer}`),
+  });
+  assert.equal(ok.selectedSchema, "generic:v1");
+  assert.equal(ok.accepted, true);
+  assert.equal(ok.eventName, "transfer");
+  assert.equal(ok.rejectionReason, null);
+  const valueCheck = ok.fieldChecks.find((c) => c.field === "value");
+  assert.ok(valueCheck);
+  assert.equal(valueCheck.observedPreview.includes(fakeBearer), false);
+
+  const bad = explainGenericEvent({ id: "2-0", ledger: 101, topic: [] });
+  assert.equal(bad.selectedSchema, "generic:v1");
+  assert.equal(bad.accepted, false);
+  assert.equal(bad.rejectionReason, "missing or empty topic array");
 });
