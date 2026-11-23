@@ -144,6 +144,9 @@ export const COMMAND_NAMES = [
   "ping",
   "pause",
   "resume",
+  "follow",
+  "unfollow",
+  "follows",
 ] as const;
 
 /** A registered command name. */
@@ -165,6 +168,9 @@ export const COMMAND_DESCRIPTIONS: Readonly<Record<CommandName, string>> = {
   ping: "Measure Telegram round-trip latency",
   pause: "Operator only: pause new scans",
   resume: "Operator only: resume polling now",
+  follow: "Subscribe this chat to a market or squad ref",
+  unfollow: "Remove a follow subscription",
+  follows: "List active follow subscriptions for this chat",
 } as const;
 
 // ── Notification template interfaces ─────────────────────────────────────────
@@ -720,6 +726,9 @@ const ES_COMMAND_DESCRIPTIONS: Readonly<Record<CommandName, string>> = {
   ping: "Medir la latencia de ida y vuelta de Telegram",
   pause: "Solo operadores: pausar nuevos escaneos",
   resume: "Solo operadores: reanudar el sondeo ahora",
+  follow: "Suscribir este chat a un ref de mercado o escuadrón",
+  unfollow: "Eliminar una suscripción de seguimiento",
+  follows: "Listar las suscripciones activas de este chat",
 };
 
 const ES_NOTIFICATION_MD: NotificationMarkdownTemplates = {

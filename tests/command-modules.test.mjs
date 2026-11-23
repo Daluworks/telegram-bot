@@ -47,6 +47,9 @@ const MENU = [
   "categories",
   "pause",
   "resume",
+  "follow",
+  "unfollow",
+  "follows",
 ];
 
 const OPERATOR_ONLY = ["audit", "pause", "resume"];

@@ -23,9 +23,10 @@ const PUBLIC_LINES = [
 const ALL_LINES = [
   ...PUBLIC_LINES.slice(0, 5),
   "/audit — Operator only: audit report \\(redacted, bounded\\)",
-  ...PUBLIC_LINES.slice(5),
+  ...PUBLIC_LINES.slice(4, 7),
   "/pause — Operator only: pause new scans",
   "/resume — Operator only: resume polling now",
+  ...PUBLIC_LINES.slice(7),
 ];
 
 function fixture(operatorTelegramUserId) {

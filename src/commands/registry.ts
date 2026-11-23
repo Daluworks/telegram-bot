@@ -22,6 +22,7 @@ import type { BotConfig } from "../config.js";
 import { COMMAND_DESCRIPTIONS, messagesFor } from "../i18n.js";
 import type { LogCapture } from "../logger.js";
 import type { PollerPauseResult, PollerResumeResult, PollerStatus } from "../poller.js";
+import type { FollowStore } from "../subscriptions/store.js";
 import type { BroadcastStore } from "./broadcast.js";
 import type { FollowStore } from "../subscriptions/store.js";
 import type { PendingDigestWindow } from "../notifications/digest-preview.js";

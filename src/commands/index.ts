@@ -31,6 +31,9 @@ import "./preview.js";
 import "./categories.js";
 import "./pause.js";
 import "./resume.js";
+import "./follow.js";
+import "./unfollow.js";
+import "./follows.js";
 import "./log-export.js"; // hidden: operator log export
 import "./match-preview.js"; // hidden: operator subscription match count
 import "./digest-preview.js"; // hidden: operator pending digest preview
