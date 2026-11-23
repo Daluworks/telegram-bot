@@ -87,7 +87,7 @@ import {
   type OrphanedJournalEntry,
   type SendJournal,
 } from "./notifications/send-journal.js";
-import { resolveRouteChatId } from "./notifications/notifier.js";
+import { InvalidDeliveryResultError } from "./notifications/notifier.js";
 import {
   acquireInstanceLock,
   InstanceLockError,
@@ -2969,19 +2969,15 @@ export function createPoller(deps: PollerDeps) {
         // All retries exhausted. The event still counts as failed and the cursor
         // still advances — but the message is parked instead of dropped, so a
         // transient Telegram outage costs a delay rather than the notification.
-        if (sendJournal) {
+        if (sendJournal && err instanceof InvalidDeliveryResultError) {
           try {
-            await sendJournal.recordError({
-              id: event.eventId,
-              source: event.source,
-              ledger: event.ledger,
-              eventName: event.payload.name,
-              error: err,
-              secrets: config.botToken ? [config.botToken] : [],
-            });
+            await sendJournal.recordInvalidResult(
+              event.eventId,
+              safeErrorMessage(err, [config.botToken]),
+            );
           } catch (journalErr) {
             console.error(
-              `[poller] send journal error record failed for ${event.eventId}: ${safeErrorMessage(journalErr)}`,
+              `[poller] send journal diagnostic failed for ${event.eventId}: ${safeErrorMessage(journalErr)}`,
             );
           }
         }

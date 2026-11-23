@@ -331,26 +331,88 @@ export function createNotifier(
   config: Pick<BotConfig, "chatId" | "marketChatId" | "squadChatId" | "botToken"> &
     Partial<Pick<BotConfig, "chatIds" | "linkPreviewMarket" | "linkPreviewSquad" | "silentEvents">>,
   options?: NotifierOptions,
-) {
-  const retry = options?.retry;
-  const retryNow = retry?.now ?? Date.now;
-  const retrySleep = retry?.sleep ?? defaultSleep;
-  const initialBackoffMs = Math.max(0, retry?.initialBackoffMs ?? DEFAULT_NOTIFIER_INITIAL_BACKOFF_MS);
-  const maxBackoffMs = Math.max(initialBackoffMs, retry?.maxBackoffMs ?? DEFAULT_NOTIFIER_MAX_BACKOFF_MS);
-  const scheduledRetries = new Map<string, { nextAttemptAt: number; attempts: number }>();
-  let retryStateLoaded = false;
+): Notifier {
+  const migrations = new Map<string, string>();
+  const secrets = typeof config.botToken === "string" ? [config.botToken] : [];
+
+  function resolveMigratedChatId(chatId: string): string {
+    let current = chatId;
+    const seen = new Set<string>();
+    while (migrations.has(current) && !seen.has(current)) {
+      seen.add(current);
+      current = migrations.get(current)!;
+    }
+    return current;
+  }
+
+  function migrateRoute(fromChatId: string, toChatId: string): boolean {
+    const from = fromChatId.trim();
+    const to = toChatId.trim();
+    if (!from || !to || from === to) return false;
+    // Prevent cyclic migrations (e.g. to -> ... -> from).
+    if (resolveMigratedChatId(to) === from) return false;
+    if (migrations.get(from) === to) return false;
+
+    migrations.set(from, to);
+    applyChatMigration(config, from, to);
+    console.warn(`[notifier] route migrated to supergroup chat id`);
+    options?.onRouteMigrated?.(from, to);
+    return true;
+  }
+
+  async function sendToChat(
+    chatId: string,
+    text: string,
+    notificationOptions: {
+      parse_mode: "MarkdownV2";
+      link_preview_options: { is_disabled: boolean };
+      disable_notification?: boolean;
+    },
+    silentOption: { disable_notification?: boolean },
+    extra?: SendExtra,
+    omitReplyTo = false,
+  ): Promise<void> {
+    const replyToMessageId = omitReplyTo ? undefined : extra?.replyToMessageId;
+
+    // Oversized payloads go out as ordered chunks under Telegram's limit. The
+    // thread reply rides on the first chunk and the explorer button on the
+    // last, so the message reads exactly like the unsplit one.
+    const parts = splitTelegramMessage(text);
+    if (parts.length > 1) {
+      for (const [index, part] of parts.entries()) {
+        const res = await bot.api.sendMessage(chatId, part, {
+          ...notificationOptions,
+          ...(index === parts.length - 1 && extra?.reply_markup
+            ? { reply_markup: extra.reply_markup }
+            : {}),
+          ...(index === 0 && replyToMessageId !== undefined
+            ? { reply_parameters: { chat_id: chatId, message_id: replyToMessageId } }
+            : {}),
+        });
+        if (requireMessageId) assertDeliveryMessageId(res);
+      }
+      return;
+    }
 
   async function ensureRetryStateLoaded(): Promise<void> {
     if (!retry || retryStateLoaded) return;
     retryStateLoaded = true;
     try {
-      for (const entry of await retry.journal.loadPending()) {
-        if (typeof entry.nextAttemptAt === "number" && Number.isFinite(entry.nextAttemptAt)) {
-          scheduledRetries.set(entry.id, {
-            nextAttemptAt: entry.nextAttemptAt,
-            attempts: typeof entry.attempts === "number" && Number.isFinite(entry.attempts) ? entry.attempts : 1,
-          });
-        }
+      const res = await bot.api.sendMessage(chatId, text, {
+        ...notificationOptions,
+        ...(extra?.reply_markup ? { reply_markup: extra.reply_markup } : {}),
+        ...(replyToMessageId !== undefined
+          ? { reply_parameters: { chat_id: chatId, message_id: replyToMessageId } }
+          : {}),
+      });
+      if (requireMessageId) assertDeliveryMessageId(res);
+      return;
+    } catch (err) {
+      // A blank fallback is no fallback: sending whitespace-only text would
+      // just draw the same 400, so the original parse error propagates.
+      const fallback = extra?.plainText;
+      if (typeof fallback !== "string" || fallback.trim() === "" || !isMarkdownParseError(err)) {
+        throw err;
       }
     } catch (err) {
       console.warn(
@@ -359,6 +421,16 @@ export function createNotifier(
           typeof config.botToken === "string" ? [config.botToken] : [],
         )}`,
       );
+      // Plain text (no parse mode), same per-source link preview setting.
+      const res = await bot.api.sendMessage(chatId, fallback, {
+        link_preview_options: notificationOptions.link_preview_options,
+        ...silentOption,
+        ...(extra?.reply_markup ? { reply_markup: extra.reply_markup } : {}),
+        ...(replyToMessageId !== undefined
+          ? { reply_parameters: { chat_id: chatId, message_id: replyToMessageId } }
+          : {}),
+      });
+      if (requireMessageId) assertDeliveryMessageId(res);
     }
   }
 

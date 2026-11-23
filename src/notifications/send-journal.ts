@@ -33,6 +33,7 @@ import { sanitizeTelegramError } from "./notifier.js";
 
 export const DEFAULT_SEND_JOURNAL_MAX_ENTRIES = 1_000;
 export const DEFAULT_SEND_JOURNAL_MAX_BYTES = 1_000_000;
+export const SEND_JOURNAL_DIAGNOSTIC_MAX_CHARS = 200;
 
 export type DeliveryOutcome = "sent" | "failed" | "skipped";
 
@@ -42,7 +43,7 @@ export interface JournalDestination {
 }
 
 export interface JournalEntry {
-  kind: "intent" | "retry" | "done";
+  kind: "intent" | "done" | "invalid_result";
   id: string;
   source: string;
   ledger: number;
@@ -55,10 +56,8 @@ export interface JournalEntry {
   outcome?: DeliveryOutcome;
   /** Bounded hash of the message body; the body itself is never persisted. */
   textHash?: string;
-  /** Stable error code for operator triage (e.g. Telegram error_code 400, 429). */
-  errorCode?: number | string;
-  /** Sanitized, redacted, and length-bounded error description. */
-  errorDescription?: string;
+  /** Bounded diagnostic retained when a delivery result is invalid (e.g. missing message_id). */
+  diagnostic?: string;
   at: number;
   /**
    * Epoch milliseconds when the next retry attempt is eligible.
@@ -106,12 +105,10 @@ export interface SendJournal {
   recordRetry(id: string, nextAttemptAt: number, attempts?: number): Promise<void>;
   recordDone(id: string): Promise<void>;
   /**
-   * Record that a send attempt for `id` timed out before Telegram responded.
-   * The notification may or may not have been delivered. This is distinct from
-   * a confirmed rejection (4xx error) or a crash before the send was attempted.
-   * `timeoutReason` is a bounded, pre-scrubbed description; never persisted raw.
+   * Record a bounded diagnostic when a send returned an invalid delivery result
+   * (such as missing `message_id`) without marking the intent as `done`.
    */
-  recordTimeout(id: string, timeoutReason?: string): Promise<void>;
+  recordInvalidResult(id: string, diagnostic: string): Promise<void>;
   /** Intents with no matching done: notifications that may have been sent. */
   loadPending(): Promise<JournalEntry[]>;
   /**
@@ -124,22 +121,10 @@ export interface SendJournal {
   stats(): Promise<SendJournalStats>;
 }
 
-/**
- * Remaining wait time in milliseconds until `nextAttemptAt` is due.
- * Returns `0` when `nextAttemptAt` is absent, non-finite, or already due.
- */
-export function retryDelayMs(
-  nextAttemptAt: number | undefined,
-  asOf: number = Date.now(),
-): number {
-  if (typeof nextAttemptAt !== "number" || !Number.isFinite(nextAttemptAt)) return 0;
-  if (typeof asOf !== "number" || !Number.isFinite(asOf)) return 0;
-  return Math.max(0, nextAttemptAt - asOf);
-}
-
-function normalizeNonNegativeInt(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
-  return Math.floor(value);
+function boundDiagnostic(raw: string): string {
+  const singleLine = raw.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= SEND_JOURNAL_DIAGNOSTIC_MAX_CHARS) return singleLine;
+  return `${singleLine.slice(0, SEND_JOURNAL_DIAGNOSTIC_MAX_CHARS)}…`;
 }
 
 function line(entry: JournalEntry): string {
@@ -298,67 +283,50 @@ export function createSendJournal(options: SendJournalOptions): SendJournal {
     }
   }
 
-  function resolvePending(entries: JournalEntry[]): JournalEntry[] {
-    const done = new Set<string>();
-    const timedOut = new Set<string>();
-    for (const entry of entries) {
-      if (entry.kind === "done") done.add(entry.id);
-      if (entry.kind === "timeout") timedOut.add(entry.id);
+  async function recordInvalidResult(id: string, diagnostic: string): Promise<void> {
+    await append({
+      kind: "invalid_result",
+      id,
+      source: "",
+      ledger: 0,
+      eventName: "",
+      diagnostic: boundDiagnostic(diagnostic),
+      at: now(),
+    });
+    const stats = await journalStats();
+    if (stats.entries > maxEntries || stats.bytes > maxBytes) {
+      await compact();
     }
-    const pending = new Map<string, JournalEntry>();
+  }
+
+  function resolveUnresolvedIntents(entries: JournalEntry[]): JournalEntry[] {
+    const done = new Set<string>();
+    const diagnostics = new Map<string, string>();
     for (const entry of entries) {
-      if (done.has(entry.id)) continue;
-      if (entry.kind === "intent") {
-        const nextAttemptAt = normalizeNonNegativeInt(entry.nextAttemptAt);
-        const attempts = normalizeNonNegativeInt(entry.attempts);
-        pending.set(entry.id, {
-          kind: "intent",
-          id: entry.id,
-          source: entry.source,
-          ledger: entry.ledger,
-          eventName: entry.eventName,
-          ...(entry.textHash !== undefined ? { textHash: entry.textHash } : {}),
-          at: entry.at,
-          ...(nextAttemptAt !== undefined ? { nextAttemptAt } : {}),
-          ...(attempts !== undefined ? { attempts } : {}),
-        });
-      } else if (entry.kind === "retry") {
-        const nextAttemptAt = normalizeNonNegativeInt(entry.nextAttemptAt);
-        const attempts = normalizeNonNegativeInt(entry.attempts);
-        const existing = pending.get(entry.id);
-        if (existing) {
-          if (nextAttemptAt !== undefined) existing.nextAttemptAt = nextAttemptAt;
-          if (attempts !== undefined) existing.attempts = attempts;
-        } else {
-          pending.set(entry.id, {
-            kind: "intent",
-            id: entry.id,
-            source: entry.source ?? "",
-            ledger: entry.ledger ?? 0,
-            eventName: entry.eventName ?? "",
-            at: entry.at,
-            ...(nextAttemptAt !== undefined ? { nextAttemptAt } : {}),
-            ...(attempts !== undefined ? { attempts } : {}),
-          });
-        }
+      if (entry.kind === "done") {
+        done.add(entry.id);
+      } else if (entry.kind === "invalid_result" && typeof entry.diagnostic === "string") {
+        diagnostics.set(entry.id, boundDiagnostic(entry.diagnostic));
       }
     }
-    return [...pending.values()];
+    return entries
+      .filter((e) => e.kind === "intent" && !done.has(e.id))
+      .map((e) => {
+        const diag = diagnostics.get(e.id) ?? e.diagnostic;
+        return diag !== undefined ? { ...e, diagnostic: boundDiagnostic(diag) } : e;
+      });
   }
 
   async function loadPending(): Promise<JournalEntry[]> {
-    return resolvePending(await readLines());
-  }
-
-  async function loadDue(asOf: number = now()): Promise<JournalEntry[]> {
-    const pending = await loadPending();
-    return pending.filter((entry) => retryDelayMs(entry.nextAttemptAt, asOf) === 0);
+    const entries = await readLines();
+    return resolveUnresolvedIntents(entries);
   }
 
   async function compact(): Promise<void> {
-    // A done line settles its intent and any retry lines: all can be dropped.
-    // Unresolved intents are persisted with their latest nextAttemptAt/attempts.
-    const unresolved = resolvePending(await readLines());
+    const entries = await readLines();
+    // A done line settles its intent: both lines can be dropped. Keep only
+    // unresolved intents (with any attached bounded diagnostic).
+    const unresolved = resolveUnresolvedIntents(entries);
     await persist(unresolved);
   }
 
@@ -381,5 +349,5 @@ export function createSendJournal(options: SendJournalOptions): SendJournal {
     return journalStats();
   }
 
-  return { recordIntent, recordRetry, recordDone, loadPending, loadDue, compact, stats };
+  return { recordIntent, recordDone, recordInvalidResult, loadPending, compact, stats };
 }
