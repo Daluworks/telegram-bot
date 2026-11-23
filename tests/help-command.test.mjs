@@ -14,6 +14,7 @@ const PUBLIC_LINES = [
   "/menu — Show navigation menu",
   "/status — Last\\-seen ledger and watched contracts",
   "/contracts — Contract ids and explorer links",
+  "/filters — Active notification filters and routing",
   "/health — Health assessment and operational readiness",
   "/preview — Preview channel notification formatting",
   "/categories — Observed claim categories and counts",
