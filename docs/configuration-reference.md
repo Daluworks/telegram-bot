@@ -60,14 +60,13 @@ Shareable event archives (JSONL captures produced by the archive helpers) can be
 ### Health Reporting
 - `HEALTH_HOST` & `HEALTH_PORT`: Binds a local HTTP endpoint for health probes (e.g., Kubernetes liveness probes). Set port to 0 to disable.
 - `HEALTH_STALE_MS`: Marks the health endpoint as degraded if no successful poll completes within this window (e.g., 90000ms).
-- `HEALTH_AUTH_TOKEN`: Optional bearer token for all health/metrics routes. Authorization headers over 4096 UTF-8 bytes (including `Bearer `) are rejected with the same empty `401` as other malformed values.
+- `HEALTH_AUTH_TOKEN`: Optional bearer token; all health-lister routes, including the Atom feed, require it when set. Required in practice when binding beyond loopback.
 
-### Logging
-- `LOG_LEVEL`: Minimum severity emitted (`info` by default).
-- `LOG_FORMAT`: Console format (`text` by default, or `json` for one JSON object per line).
-- `LOG_FILE`: Optional path for a local JSONL operational log. Unset by default; records are appended as redacted JSON lines regardless of `LOG_FORMAT`.
-- `LOG_FILE_MAX_BYTES`: Rotation threshold in bytes (10 MiB by default; invalid values fall back to the default).
-- `LOG_FILE_MAX_FILES`: Total local files retained, including the active file (5 by default, clamped to 1–50). `1` keeps only the active file.
+### Read-only Atom Feed
+- `ATOM_FEED_ENABLED`: Enables `GET /atom` on the health listener. Defaults to `false`.
+- `ATOM_FEED_MAX_ENTRIES`: Maximum decoded events retained in memory for the feed (default `50`, minimum `1`). Oldest entries are dropped first.
+- `ATOM_FEED_SELF_URL`: Optional public https URL used as the feed's self link; unset derives a loopback http URL (used as `<id>` only).
+- The feed is read-only, makes no exactly-once delivery claim, and never signs or submits chain transactions. See [HTTP endpoints](http-endpoints.md).
 
 ## Operational Behavior
 
