@@ -18,6 +18,7 @@
 // Registration order = menu order. Keep this list in sync with the menu.
 import "./help.js"; // registers /start and /help, in that order
 import "./about.js";
+import "./menu.js";
 import "./status.js";
 import "./audit.js";
 import "./contracts.js";
@@ -95,6 +96,7 @@ export { helpCommand, helpMessage, startCommand } from "./help.js";
 export { auditCommand, renderAuditForTelegram } from "./audit.js";
 export { contractsCommand, contractsMessage } from "./contracts.js";
 export { healthCommand, healthMessage } from "./health.js";
+export { menuCommand, menuKeyboard, menuMessage } from "./menu.js";
 export { pauseCommand, pauseMessage, PAUSE_PROMPT } from "./pause.js";
 export { previewCommand } from "./preview.js";
 export {
