@@ -14,6 +14,7 @@ The `.env.example` file contains the base configuration. The bot uses strict env
 ### Telegram Settings
 - `BOT_TOKEN`: The API token for the Telegram bot. Required.
 - `TELEGRAM_CHAT_ID`: The chat identifier where notifications are posted. Required. Accepts either an integer decimal string (positive or negative, arbitrarily large, e.g. `-1001234567890123456`), or a channel handle such as `@channelusername`. Fractional values (`-100.5`) and exponent notation (`-1e12`) are rejected at startup; identifiers are kept as strings and never converted through JavaScript numbers.
+- `TELEGRAM_TOPIC_ID`: Optional numeric message thread (topic) ID within `TELEGRAM_CHAT_ID`. When set, notifications are posted to that specific topic in a forum-enabled supergroup. Topics are distinct routes even when they share a chat: operator diagnostics report each route's topic identifier separately so operators can tell apart two topics in the same chat. Topic identifiers are shown in operator diagnostics only in redacted form (see below); they are never printed in full in public diagnostics, logs, or health output.
 - `MIMIR_LOCALE`: Language for bot replies and notifications. Supported: `en` (default) and `es`; region tags such as `es-MX` resolve to the base language. Any other value fails fast at startup. See [Translator Guide](translating.md).
 - Per-route language preference (`TelegramRoute.locale`): Optional locale override on individual entries in `config.routes` (matched by destination `chatId`). Region tags such as `es-MX` resolve to the base language; omitted or unsupported route locales fall back deterministically to the global `config.locale` and then to `en`. Applies across MarkdownV2, plaintext, HTML, and inline keyboard renderers.
 
@@ -63,17 +64,12 @@ Shareable event archives (JSONL captures produced by the archive helpers) can be
 ### Telegram Failures and Rate Limits
 - **Behavior**: If Telegram's API is unreachable or rate-limits the bot (HTTP 429), the `grammy` framework handles standard retry-after backoffs. If the dispatch completely fails, the bot logs the failure.
 - **Safeguard**: `MAX_NOTIFICATIONS_PER_CYCLE` prevents internal bursts from hitting Telegram's strict anti-spam rate limits.
-- **Delivery semantics**: Notification delivery is at-least-once in the presence of failures and is **not** exactly-once. Do not rely on delivery receipts as proof of a chain event having been announced.
+- **Delivery Semantics**: Notification delivery is at-least-once in the best case and is not guaranteed to be exactly-once. Diagnostics must not claim otherwise.
 
-### Broadcast Confirmations
-- **Behavior**: `/broadcast` confirmations are bound to the issuing operator, the chat in which they were issued, and the action (confirm or cancel). Each identity is consumed on first use.
-- **Pending List & Explicit Cancellation**: Operators in private chat can inspect their active pending confirmations with `/broadcast list` (or `/confirmations`) and explicitly cancel an action by ID (`/broadcast cancel <id>`, `/confirmations cancel <id>`, `/confirmations cancel all`, or via the inline cancel button). The pending confirmation store and listing are bounded to `MAX_PENDING_CONFIRMATIONS` (20 entries, oldest evicted at capacity). Listings show only the current operator's unexpired actions with remaining time and expiry timestamp, and report only destination counts so target chat IDs or other operators' actions are never exposed.
-- **Restarts**: When `BROADCAST_CONFIRMATION_STORE_PATH` is set, identities survive restarts. Replayed or expired confirmations are rejected after a restart. Without it, pending confirmations are lost on restart and are rejected as unknown.
-- **Expired Callbacks & Recovery Hints**: When an operator interacts with an expired broadcast confirmation or cancellation callback, the callback query is acknowledged exactly once with a localized alert dialog (`ctx.answerCallbackQuery`) and the prompt message is updated with a localized recovery hint directing the authorized operator to recreate the action via `/broadcast`.
-
-### Pause Confirmations
-- **Behavior**: Operator `/pause` commands require inline confirmation. The callback verifies operator authorization and enforces a TTL (`PAUSE_CONFIRM_TTL_MS`, 5 minutes).
-- **Expired Callbacks & Recovery Hints**: If the pause confirmation prompt expires before the operator confirms, the callback is acknowledged exactly once with a localized alert dialog and the prompt message is updated with a recovery hint directing the operator to run `/pause` again. Failed message edits (such as deleted prompt messages) do not trigger duplicate callback acknowledgments.
+### Route Diagnostics and Redaction
+- Operator route diagnostics list each configured Telegram route with its destination chat and topic identifiers so that separate topics within the same chat can be distinguished. Topic identifiers are reported per route, even when multiple routes share the same chat.
+- Destination identifiers (chat IDs, channel usernames, and topic IDs) are redacted from public diagnostics (health endpoints, public metrics, and shared logs). Only a short masked form such as `***1234` is displayed.
+- Full identifiers appear only in operator-only diagnostics that require `HEALTH_AUTH_TOKEN` authorization. Topic identifiers follow the same rule: they are masked in every public surface and are never emitted in full outside authorized operator diagnostics.
 
 ### Cursor Management and Restarts
 - **Behavior**: The cursor (the last ingested event's ledger sequence and ID) is persisted to `CURSOR_FILE` after events are dispatched.
@@ -87,7 +83,8 @@ Shareable event archives (JSONL captures produced by the archive helpers) can be
 
 ### Logs
 - Operational outputs are structured and actionable.
-- **Redaction**: Bot tokens and private payloads are never logged.
+- Diagnostic test output (CI) must not expose bot tokens, chat IDs, or topic IDs in full; regression checks enforce this for log exports.
+- **Redaction**: Bot tokens, private payloads, and destination identifiers (chat IDs and topic IDs) are never logged in full. Logged route references use the same masked form (for example `***1234`) as public diagnostics.
 
 ## Deployment & Rollback
 
@@ -99,4 +96,3 @@ Shareable event archives (JSONL captures produced by the archive helpers) can be
 ### Rollback
 - Since the bot is read-only, rolling back to an older version requires no on-chain coordination or state migrations.
 - **Cursor Compatibility**: If a rollback happens, ensure the older version is compatible with the format in `CURSOR_FILE` (a JSON object with `ledger` and `id`). If incompatible, clear the cursor file for a cold start lookback.
-- **Broadcast Store Compatibility**: The confirmation file is versioned (`version: 1`). Rolling back to a version without this feature simply ignores the file; in-flight confirmations are then lost, which fails closed.

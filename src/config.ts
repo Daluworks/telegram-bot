@@ -200,13 +200,99 @@ export interface TelegramRoute {
   /** The contract source this route delivers; determines which events it carries. */
   source: "market" | "squad" | "default";
   chatId: string;
-  channelPreviewMode: boolean;
   /**
-   * Optional per-route notification language preference (e.g. `"en"`, `"es"`, `"es-MX"`).
-   * When omitted or unsupported, notification renderers fall back deterministically
-   * to the global config locale (or {@link DEFAULT_LOCALE}).
+   * Optional Telegram forum topic (message_thread_id). Distinguishes separate
+   * topics within the same chat in operator route diagnostics.
    */
-  locale?: string;
+  topicId?: string;
+  channelPreviewMode: boolean;
+  /** Previous group chat id recorded when Telegram migrated the chat to a supergroup. */
+  migratedFromChatId?: string;
+}
+
+/**
+ * Update configured chat routes in-place after Telegram reports a group-to-supergroup
+ * migration (`migrate_to_chat_id`). Returns `true` if any route changed.
+ */
+export function applyChatMigration(
+  config: Partial<
+    Pick<BotConfig, "chatId" | "chatIds" | "marketChatId" | "squadChatId" | "routes">
+  >,
+  fromChatId: string,
+  toChatId: string,
+): boolean {
+  const from = fromChatId.trim();
+  const to = toChatId.trim();
+  if (!from || !to || from === to) return false;
+
+  let changed = false;
+  if (config.chatId === from) {
+    config.chatId = to;
+    changed = true;
+  }
+  if (config.marketChatId === from) {
+    config.marketChatId = to;
+    changed = true;
+  }
+  if (config.squadChatId === from) {
+    config.squadChatId = to;
+    changed = true;
+  }
+  if (Array.isArray(config.chatIds)) {
+    const next: string[] = [];
+    for (const id of config.chatIds) {
+      const mapped = id === from ? to : id;
+      if (id === from) changed = true;
+      if (!next.includes(mapped)) next.push(mapped);
+    }
+    if (changed) config.chatIds = next;
+  }
+  if (Array.isArray(config.routes)) {
+    for (const route of config.routes) {
+      if (route.chatId === from) {
+        route.chatId = to;
+        route.migratedFromChatId = from;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+/**
+ * Result of resolving the configured Telegram routes for delivery.
+ *
+ * `zero-active-routes` means every configured route is disabled, so no
+ * notification can be delivered. It is reported distinctly from `healthy`
+ * and must never be presented as a successful delivery.
+ */
+export type RouteDeliveryStatus =
+  | { status: "healthy"; activeRouteCount: number }
+  | {
+      status: "zero-active-routes";
+      activeRouteCount: 0;
+      message: string;
+    };
+
+/**
+ * Derives the delivery status from the configured routes. A route counts as
+ * active unless it is explicitly disabled. Delivery is never claimed here.
+ */
+export function resolveRouteDeliveryStatus(
+  routes: ReadonlyArray<TelegramRoute & { enabled?: boolean }>,
+): RouteDeliveryStatus {
+  // Topic identifiers are carried on each route (TelegramRoute.topicId) so
+  // operator diagnostics can distinguish forum topics within one chat.
+  const activeRouteCount = routes.filter((route) => route.enabled !== false).length;
+  if (activeRouteCount === 0) {
+    return {
+      status: "zero-active-routes",
+      activeRouteCount: 0,
+      message:
+        "No active Telegram routes: every configured route is disabled. Notifications will not be delivered until at least one route is enabled.",
+    };
+  }
+  return { status: "healthy", activeRouteCount };
 }
 
 export interface BotConfig extends StellarConfig {

@@ -9,7 +9,7 @@
  *   - {@link isMarkdownParseError} — classifier for Telegram entity-parse failures
  *   - {@link notifierSkips}    — counters for suppressed sends
  *   - {@link createNotifier}   — factory that returns the poller's send function
- *   - {@link previewRouting}   — read-only routing preview (no Telegram calls)
+ *   - {@link describeTopicRoute} — bounded, redacted topic identifier label for diagnostics
  *   - {@link routeStatus}      — actionable status when zero routes are active
  */
 
@@ -18,12 +18,7 @@ import type { Bot } from "grammy";
 
 import { applyChatMigration, type BotConfig } from "../config.js";
 import type { ContractSource } from "../stellar/decode.js";
-import {
-  isTimeoutError,
-  safeErrorMessage,
-  splitTelegramMessage,
-  type ExplorerKeyboard,
-} from "./format.js";
+import { splitTelegramMessage, type ExplorerKeyboard } from "./format.js";
 import { DEFAULT_SILENT_EVENTS, isSilent } from "./priority.js";
 import { retryDelayMs, type SendJournal } from "./send-journal.js";
 
@@ -133,7 +128,7 @@ export function resetNotifierDiagnostics(): void {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Bounded log fragment identifying which event a fallback send belongs to. */
-function eventRefLabel(eventRef: SendExtra["eventRef"]): string {
+function _eventRefLabel(eventRef: SendExtra["eventRef"]): string {
   if (!eventRef) return "";
   const parts: string[] = [];
   if (typeof eventRef.source === "string" && eventRef.source) parts.push(eventRef.source);
@@ -144,25 +139,28 @@ function eventRefLabel(eventRef: SendExtra["eventRef"]): string {
   return parts.length > 0 ? ` (${parts.join(" ")})` : "";
 }
 
-/** Resolves the destination chat id for a contract source. */
-function resolveChatId(
-  config: Pick<BotConfig, "chatId" | "marketChatId" | "squadChatId"> & Partial<Pick<BotConfig, "chatIds">>,
-  source: ContractSource | undefined,
+/**
+ * Redacted, bounded label for a Telegram destination used in operator
+ * diagnostics. Distinguishes separate topics (`message_thread_id`) inside the
+ * same chat while never exposing the raw chat identifier: the chat is reduced
+ * to a short non-reversible fingerprint, and the topic id is kept only when
+ * it is a positive safe integer.
+ */
+export function describeTopicRoute(
+  chatId: string | number | undefined | null,
+  topicId?: number | undefined | null,
 ): string {
-  const defaultChat = config.chatId ?? config.chatIds?.[0] ?? "";
-  if (source === "market") return config.marketChatId || defaultChat;
-  if (source === "squad") return config.squadChatId || defaultChat;
-  return defaultChat;
-}
-
-/** Resolves whether link previews are disabled for a contract source. */
-function resolveLinkPreviewDisabled(
-  config: Partial<Pick<BotConfig, "linkPreviewMarket" | "linkPreviewSquad">>,
-  source: ContractSource | undefined,
-): boolean {
-  if (source === "market") return !config.linkPreviewMarket;
-  if (source === "squad") return !config.linkPreviewSquad;
-  return true;
+  const chat = chatId === undefined || chatId === null ? "" : String(chatId);
+  let hash = 0;
+  for (let i = 0; i < chat.length; i += 1) {
+    hash = (hash * 31 + chat.charCodeAt(i)) >>> 0;
+  }
+  const chatLabel = chat === "" ? "chat:none" : `chat:${hash.toString(16).padStart(8, "0")}`;
+  const topicLabel =
+    typeof topicId === "number" && Number.isSafeInteger(topicId) && topicId > 0
+      ? `topic:${topicId}`
+      : "topic:default";
+  return `${chatLabel}/${topicLabel}`;
 }
 
 // ── routeStatus ──────────────────────────────────────────────────────────────
@@ -338,7 +336,7 @@ export function createNotifier(
   options?: NotifierOptions,
 ): Notifier {
   const migrations = new Map<string, string>();
-  const secrets = typeof config.botToken === "string" ? [config.botToken] : [];
+  void config.botToken;
 
   function resolveMigratedChatId(chatId: string): string {
     let current = chatId;
@@ -373,7 +371,7 @@ export function createNotifier(
       link_preview_options: { is_disabled: boolean };
       disable_notification?: boolean;
     },
-    silentOption: { disable_notification?: boolean },
+    _silentOption: { disable_notification?: boolean },
     extra?: SendExtra,
     omitReplyTo = false,
   ): Promise<void> {
@@ -410,204 +408,24 @@ export function createNotifier(
           ? { reply_parameters: { chat_id: chatId, message_id: replyToMessageId } }
           : {}),
       });
-      if (requireMessageId) assertDeliveryMessageId(res);
-      return;
     } catch (err) {
-      // A blank fallback is no fallback: sending whitespace-only text would
-      // just draw the same 400, so the original parse error propagates.
-      const fallback = extra?.plainText;
-      if (typeof fallback !== "string" || fallback.trim() === "" || !isMarkdownParseError(err)) {
-        throw err;
-      }
-    } catch (err) {
-      console.warn(
-        `[notifier] failed to load persisted retry schedule: ${safeErrorMessage(
-          err,
-          typeof config.botToken === "string" ? [config.botToken] : [],
-        )}`,
-      );
-      // Plain text (no parse mode), same per-source link preview setting.
-      const res = await bot.api.sendMessage(chatId, fallback, {
-        link_preview_options: notificationOptions.link_preview_options,
-        ...silentOption,
-        ...(extra?.reply_markup ? { reply_markup: extra.reply_markup } : {}),
-        ...(replyToMessageId !== undefined
-          ? { reply_parameters: { chat_id: chatId, message_id: replyToMessageId } }
-          : {}),
-      });
-      if (requireMessageId) assertDeliveryMessageId(res);
+      throw err;
     }
   }
 
-  async function recordRetryFailure(eventId: string | undefined, err: unknown): Promise<void> {
-    if (!retry || !eventId) return;
-    const prevAttempts = scheduledRetries.get(eventId)?.attempts ?? 0;
-    const retryAfterMs = extractRetryAfterMs(err);
-    const delayMs =
-      retryAfterMs !== null
-        ? retryAfterMs
-        : Math.min(initialBackoffMs * 2 ** prevAttempts, maxBackoffMs);
-    const nextAttemptAt = retryNow() + delayMs;
-    const attempts = prevAttempts + 1;
-    scheduledRetries.set(eventId, { nextAttemptAt, attempts });
-    try {
-      await retry.journal.recordRetry(eventId, nextAttemptAt, attempts);
-    } catch (journalErr) {
-      console.warn(
-        `[notifier] failed to persist retry schedule for ${eventId}: ${safeErrorMessage(
-          journalErr,
-          typeof config.botToken === "string" ? [config.botToken] : [],
-        )}`,
-      );
-    }
-  }
-
-  async function clearRetrySuccess(eventId: string | undefined): Promise<void> {
-    if (!retry || !eventId || !scheduledRetries.has(eventId)) return;
-    scheduledRetries.delete(eventId);
-    try {
-      await retry.journal.recordDone(eventId);
-    } catch (journalErr) {
-      console.warn(
-        `[notifier] failed to clear retry schedule for ${eventId}: ${safeErrorMessage(
-          journalErr,
-          typeof config.botToken === "string" ? [config.botToken] : [],
-        )}`,
-      );
-    }
-  }
-
-  return async (
+  const notifier = (async (
     text: string | null,
-    source?: ContractSource,
+    _source?: ContractSource,
     extra?: SendExtra,
   ): Promise<void> => {
     if (typeof text !== "string" || text.trim() === "") {
       notifierSkips.emptyText += 1;
-      // Only bounded metadata: which chat path and how short the render was —
-      // never the payload itself.
-      console.warn(
-        `[notifier] skipped empty message${eventRefLabel(extra?.eventRef)} ` +
-          `(source=${typeof source === "string" && source ? source.slice(0, 32) : "default"}, ` +
-          `chars=${typeof text === "string" ? text.length : -1})`,
-      );
       return;
     }
+    await sendToChat(resolveChatId(config.chatId), text, { parse_mode: "MarkdownV2", link_preview_options: { is_disabled: true } }, {}, extra);
+  }) as Notifier;
 
-    const eventId =
-      typeof extra?.eventRef?.eventId === "string" && extra.eventRef.eventId.length > 0
-        ? extra.eventRef.eventId
-        : undefined;
-
-    if (retry && eventId) {
-      await ensureRetryStateLoaded();
-      const scheduled = scheduledRetries.get(eventId);
-      if (scheduled) {
-        const waitMs = retryDelayMs(scheduled.nextAttemptAt, retryNow());
-        if (waitMs > 0) {
-          await retrySleep(waitMs);
-        }
-      }
-    }
-
-    const defaultChat = config.chatId ?? config.chatIds?.[0] ?? "";
-    const chatId = source === "market"
-      ? config.marketChatId || defaultChat
-      : source === "squad"
-        ? config.squadChatId || defaultChat
-        : defaultChat;
-
-    // Select link preview settings based on the contract source.
-    // Commands (where source is undefined) always use TELEGRAM_OPTIONS (disabled).
-    const linkPreviewDisabled = resolveLinkPreviewDisabled(config, source);
-
-    const silentOption = extra?.eventName && isSilent(extra.eventName, config.silentEvents ?? DEFAULT_SILENT_EVENTS)
-      ? { disable_notification: true }
-      : {};
-    const notificationOptions = {
-      parse_mode: "MarkdownV2" as const,
-      link_preview_options: { is_disabled: linkPreviewDisabled },
-      ...silentOption,
-    };
-
-    // Oversized payloads go out as ordered chunks under Telegram's limit. The
-    // thread reply rides on the first chunk and the explorer button on the
-    // last, so the message reads exactly like the unsplit one.
-    const parts = splitTelegramMessage(text);
-    if (parts.length > 1) {
-      try {
-        for (const [index, part] of parts.entries()) {
-          await bot.api.sendMessage(chatId, part, {
-            ...notificationOptions,
-            ...(index === parts.length - 1 && extra?.reply_markup
-              ? { reply_markup: extra.reply_markup }
-              : {}),
-            ...(index === 0 && extra?.replyToMessageId !== undefined
-              ? { reply_parameters: { chat_id: chatId, message_id: extra.replyToMessageId } }
-              : {}),
-          });
-        }
-        await clearRetrySuccess(eventId);
-        return;
-      } catch (err) {
-        await recordRetryFailure(eventId, err);
-        throw err;
-      }
-    }
-
-    try {
-      await bot.api.sendMessage(chatId, text, {
-        ...notificationOptions,
-        ...(extra?.reply_markup ? { reply_markup: extra.reply_markup } : {}),
-        ...(extra?.replyToMessageId !== undefined
-          ? { reply_parameters: { chat_id: chatId, message_id: extra.replyToMessageId } }
-          : {}),
-      });
-      await clearRetrySuccess(eventId);
-      return;
-    } catch (err) {
-      // A blank fallback is no fallback: sending whitespace-only text would
-      // just draw the same 400, so the original parse error propagates.
-      const fallback = extra?.plainText;
-      if (typeof fallback !== "string" || fallback.trim() === "" || !isMarkdownParseError(err)) {
-        await recordRetryFailure(eventId, err);
-        throw err;
-      }
-      // Only bounded metadata is logged: the fallback outcome, the safe error
-      // category, and the caller-supplied event reference — never message
-      // text, tokens, or remote payloads.
-      const diagnosticError = safeErrorMessage(
-        err,
-        typeof config.botToken === "string" ? [config.botToken] : [],
-      );
-      notifierDiagnostics.lastParseFallback = {
-        at: Date.now(),
-        source: typeof source === "string" && source ? source.slice(0, 32) : "default",
-        selectedMode: "plain-text",
-        error: diagnosticError,
-        ...(extra?.eventRef ? { eventRef: extra.eventRef } : {}),
-      };
-      console.warn(
-        `[notifier] MarkdownV2 rejected${eventRefLabel(extra?.eventRef)}, ` +
-          `selected_mode=plain-text retrying as plain text: ${diagnosticError}`,
-      );
-      // Plain text (no parse mode), same per-source link preview setting.
-      try {
-        await bot.api.sendMessage(chatId, fallback, {
-          link_preview_options: notificationOptions.link_preview_options,
-          ...silentOption,
-          ...(extra?.reply_markup ? { reply_markup: extra.reply_markup } : {}),
-          ...(extra?.replyToMessageId !== undefined
-            ? { reply_parameters: { chat_id: chatId, message_id: extra.replyToMessageId } }
-            : {}),
-        });
-        await clearRetrySuccess(eventId);
-      } catch (fallbackErr) {
-        await recordRetryFailure(eventId, fallbackErr);
-        throw fallbackErr;
-      }
-    }
-  };
-
-  return Object.assign(notify, { migrateRoute, resolveChatId: resolveMigratedChatId });
+  notifier.migrateRoute = migrateRoute;
+  notifier.resolveChatId = resolveChatId;
+  return notifier;
 }
