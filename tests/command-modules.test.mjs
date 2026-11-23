@@ -38,6 +38,7 @@ const MENU = [
   "about",
   "menu",
   "status",
+  "events",
   "audit",
   "contracts",
   "filters",

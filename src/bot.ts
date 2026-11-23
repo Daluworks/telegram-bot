@@ -86,8 +86,11 @@ export {
   menuKeyboard,
   menuMessage,
   pauseMessage,
+  RecentEventStore,
   resumeMessage,
   statusMessage,
+  toCanonicalEventSummary,
+  type CanonicalEventSummary,
 } from "./commands/index.js";
 export {
   CALLBACK_CHAT_UNAUTHORIZED_FEEDBACK,

@@ -13,6 +13,7 @@ const PUBLIC_LINES = [
   "/about — About this bot",
   "/menu — Show navigation menu",
   "/status — Last\\-seen ledger and watched contracts",
+  "/events — Recent observed contract events",
   "/contracts — Contract ids and explorer links",
   "/filters — Active notification filters and routing",
   "/health — Health assessment and operational readiness",

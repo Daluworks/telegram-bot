@@ -145,6 +145,7 @@ import {
   type DecodedEvent,
   type DecoderCapabilityReport,
 } from "./stellar/decode.js";
+import { RecentEventStore, type CanonicalEventSummary } from "./commands/events.js";
 
 export interface TargetState {
   source: ContractSource;
@@ -2063,6 +2064,8 @@ export function createPoller(deps: PollerDeps) {
     ]),
   );
 
+  const recentEvents = new RecentEventStore();
+
   // Per-contract consecutive floor-rewind budget. Kept out of `TargetState` so
   // status output stays plain data. It resets only when a scan comes back
   // inside the retained window, so an RPC that keeps handing back a
@@ -3630,6 +3633,7 @@ export function createPoller(deps: PollerDeps) {
 
           const newest = scan.events[scan.events.length - 1];
           if (newest !== undefined) current.lastEvent = newest;
+          if (scan.events.length > 0) recentEvents.record(scan.events);
 
           const decodedCount = scan.events.reduce(
             (acc, event) => (event.payload.name !== "unknown" ? acc + 1 : acc),
@@ -4168,6 +4172,11 @@ export function createPoller(deps: PollerDeps) {
         targets: [...state.values()].map((t) => ({ ...t })),
         categories: categoryCounter.countsRecord(),
       };
+    },
+
+    /** Bounded recent canonical event summaries retained in memory for `/events`. */
+    recentEvents(): readonly CanonicalEventSummary[] {
+      return recentEvents.list();
     },
 
     /**

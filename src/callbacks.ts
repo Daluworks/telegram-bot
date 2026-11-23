@@ -37,6 +37,8 @@ import { menuKeyboard, menuMessage } from "./commands/menu.js";
 import { pauseMessage } from "./commands/pause.js";
 import { resumeMessage } from "./commands/resume.js";
 import { statusMessage } from "./commands/status.js";
+import { eventsMessage, eventsPage, resolveRecentEvents } from "./commands/events.js";
+import { pageKeyboard, parsePaginationCallback } from "./notifications/pagination.js";
 import type { CommandDeps } from "./commands/registry.js";
 import { TELEGRAM_OPTIONS, isChatAllowed, isOperator, safeAnswerCallback } from "./commands/runtime.js";
 
@@ -54,6 +56,7 @@ export type CallbackActionType =
 export interface ValidCallbackAction {
   type: CallbackActionType;
   raw: string;
+  page?: number;
 }
 
 export type CallbackValidationResult =
@@ -157,7 +160,23 @@ export function validateCallbackData(raw: unknown): CallbackValidationResult {
     }
   }
 
-  // 2. Colon-delimited: e.g. "status:refresh", "mimir:contracts", etc.
+  // 2. Pagination callback: "pg:v1:events:<page>"
+  const pagination = parsePaginationCallback(trimmed);
+  if (pagination !== null) {
+    if (pagination.kind === "events") {
+      return {
+        ok: true,
+        action: { type: "events_page", page: pagination.page, raw },
+      };
+    }
+    return {
+      ok: false,
+      reason: "unknown-action",
+      fallbackText: CALLBACK_FALLBACK_FEEDBACK,
+    };
+  }
+
+  // 3. Colon-delimited: e.g. "status:refresh", "mimir:contracts", etc.
   if (trimmed.includes(":")) {
     const parts = trimmed.split(":");
     for (const part of parts) {
