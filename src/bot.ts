@@ -377,72 +377,11 @@ export function createBot(deps: BotDeps): Bot {
   // It is deliberately not re-litigated here: `createBot` is also the entry
   // point for tests and embedders that never speak to Telegram, and a
   // placeholder token must not stop them building a bot.
-  const bot = new Bot(
-    deps.config.botToken,
-    deps.botInfo !== undefined
-      ? { botInfo: deps.botInfo, ...clientOptions }
-      : clientOptions,
-  );
+  const bot = new Bot(deps.config.botToken, clientOptions);
+
   registerCommandHandlers(bot, deps);
   registerCallbackHandlers(bot, deps);
   registerBroadcastHandlers(bot, deps);
 
-  // grammy rethrows handler errors by default, which would take the process
-  // with it. Keep Telegram/RPC error text bounded and redact known secrets.
-  bot.catch((err) => {
-    if (err.ctx?.callbackQuery) {
-      console.error(
-        formatCallbackErrorLog({
-          ctx: err.ctx,
-          action: "callback_query",
-          prefix: "[bot] handler error",
-          error: err.error,
-          secrets: [deps.config.botToken],
-        }),
-      );
-      return;
-    }
-    console.error(
-      `[bot] handler error on update ${err.ctx.update.update_id}: ` +
-        safeErrorMessage(err.error, [deps.config.botToken]),
-    );
-  });
-
   return bot;
-}
-
-// Notifier moved to src/notifications/notifier.ts — re-exported here so all
-// existing imports from "bot.js" keep resolving without modification.
-export {
-  classifyPermanentSendError,
-  createNotifier,
-  extractMessageId,
-  InvalidDeliveryResultError,
-  isMarkdownParseError,
-  notifierDiagnostics,
-  notifierSkips,
-  resetNotifierDiagnostics,
-  type ParseFallbackDiagnostic,
-  type SendExtra,
-  type SendLimiter,
-  type SendLimiterOptions,
-  type SendLimiterShutdownMode,
-  type SendLimiterStats,
-} from "./notifications/notifier.js";
-export {
-  verifyRoutes,
-  type NotificationRoute,
-  type VerifyRoutesOptions,
-} from "./notifications/verify-routes.js";
-
-/** Registers the command list so Telegram's UI offers autocompletion. */
-export async function registerCommands(bot: Bot, config?: BotConfig): Promise<void> {
-  try {
-    await bot.api.setMyCommands(
-      visibleCommandMetadata(config).map(({ command, description }) => ({ command, description })),
-    );
-  } catch (err) {
-    // Cosmetic. Never worth failing a boot over, and never log an unbounded API error.
-    console.warn(`[bot] setMyCommands failed: ${safeErrorMessage(err)}`);
-  }
 }
