@@ -1,15 +1,25 @@
 import test from "node:test";
 import assert from "node:assert";
-import { mkdtemp } from "node:fs/promises";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parseSchedule,
   nextRun,
+  nextAllowedWindowStart,
+  nextAllowedRun,
   createScheduler,
   FileLastRunStore,
   ScheduleParseError,
-} from "../src/notifications/schedule.js";
+} from "../dist/notifications/schedule.js";
+
+async function waitUntil(condition, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("fake clock: scheduler did not re-arm");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 
 function fakeClock(startMs) {
   let now = startMs;
@@ -36,9 +46,10 @@ function fakeClock(startMs) {
         timers.delete(id);
         now = t.at;
         t.cb();
-        // Yield to allow async continuations to run.
-        await Promise.resolve();
-        await Promise.resolve();
+        // The scheduler's tick does real file I/O (FileLastRunStore), which a
+        // couple of microtask yields cannot cover. Wait until it re-arms its
+        // next timer, which it does only once the tick has finished.
+        await waitUntil(() => timers.size > 0);
       }
       now = target;
     },
@@ -55,6 +66,18 @@ test("parseSchedule parses daily and weekly", () => {
   assert.deepEqual(daily, { kind: "daily", minuteOfDay: 9 * 60 });
   const weekly = parseSchedule("weekly@mon 09:00");
   assert.deepEqual(weekly, { kind: "weekly", dayOfWeek: 1, minuteOfDay: 9 * 60 });
+});
+
+test("parseSchedule enforces bounded per-destination intervals", () => {
+  const ok = parseSchedule("daily@09:00");
+  assert.strictEqual(ok.kind, "daily");
+  // Boundary: 00:00 and 23:59 are the extreme valid minutes of the day.
+  assert.deepEqual(parseSchedule("daily@00:00"), { kind: "daily", minuteOfDay: 0 });
+  assert.deepEqual(parseSchedule("daily@23:59"), { kind: "daily", minuteOfDay: 23 * 60 + 59 });
+  // Failure: out-of-range and malformed intervals are rejected with a typed error.
+  for (const bad of ["daily@24:00", "daily@-1:00", "daily@9", "weekly@mon 24:00"]) {
+    assert.throws(() => parseSchedule(bad), ScheduleParseError, `should reject "${bad}"`);
+  }
 });
 
 test("parseSchedule rejects invalid specs with typed errors", () => {
@@ -85,7 +108,7 @@ test("nextRun returns today when boundary is in the future", () => {
 });
 
 test("scheduler fires at the scheduled time", async () => {
-  const dir = await mkdtemp("test-schedule-");
+  const dir = await mkdtemp(join(tmpdir(), "test-schedule-"));
   try {
     const store = new FileLastRunStore(join(dir, "last-run"));
     const clock = fakeClock(Date.UTC(2024, 0, 1, 8, 0, 0));
@@ -99,8 +122,10 @@ test("scheduler fires at the scheduled time", async () => {
       },
     });
     await scheduler.start();
+    // No recorded run yet: nothing is missed, so nothing fires before 09:00.
+    assert.strictEqual(runs.length, 0);
     await clock.advanceTo(Date.UTC(2024, 0, 1, 9, 0, 0));
-    assert.strictEqual(runs.length, 1);
+    assert.deepStrictEqual(runs, [Date.UTC(2024, 0, 1, 9, 0, 0)]);
     await scheduler.stop();
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -108,7 +133,7 @@ test("scheduler fires at the scheduled time", async () => {
 });
 
 test("scheduler fires missed run once on restart", async () => {
-  const dir = await mkdtemp("test-schedule-restart-");
+  const dir = await mkdtemp(join(tmpdir(), "test-schedule-restart-"));
   try {
     const store = new FileLastRunStore(join(dir, "last-run"));
     // Simulate a run that happened two days ago.
@@ -128,6 +153,39 @@ test("scheduler fires missed run once on restart", async () => {
     await clock.advanceTo(Date.UTC(2024, 0, 4, 10));
     assert.strictEqual(runs.length, 2);
     await scheduler.stop();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scheduler reports complete context on normal tick and restart-incomplete context on catch-up", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "test-schedule-completeness-"));
+  try {
+    const store = new FileLastRunStore(join(dir, "last-run"));
+    await store.write(Date.UTC(2024, 0, 1, 9, 0, 0));
+    const clock = fakeClock(Date.UTC(2024, 0, 3, 10, 0, 0));
+    const contexts = [];
+    const scheduler = createScheduler({
+      schedule: "daily@09:00",
+      clock,
+      lastRunStore: store,
+      run: (_at, context) => {
+        contexts.push(context);
+      },
+    });
+    await scheduler.start();
+    await clock.advanceTo(Date.UTC(2024, 0, 4, 10, 0, 0));
+    await scheduler.stop();
+
+    assert.strictEqual(contexts.length, 2);
+    assert.deepStrictEqual(contexts[0], {
+      afterRestart: true,
+      completeness: { complete: false, reasons: ["restart"] },
+    });
+    assert.deepStrictEqual(contexts[1], {
+      afterRestart: false,
+      completeness: { complete: true, reasons: [] },
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -5,6 +5,7 @@
  * - Enabled / disabled event types (derived from feature flags and contract sources)
  * - Claim category allowlists (from config.notificationCategories)
  * - Chat routing destinations (safely redacted with redactChatId)
+ * - Per-chat digest scheduling preferences (when configured)
  *
  * All dynamic values are escaped with escapeMd.
  */
@@ -40,6 +41,16 @@ export const SQUAD_EVENT_TYPES = [
   "fees_claimed",
 ] as const;
 
+/** Bounds for digest intervals, in minutes. */
+export const DIGEST_INTERVAL_MIN_MINUTES = 5;
+export const DIGEST_INTERVAL_MAX_MINUTES = 24 * 60;
+
+/** Per-chat digest scheduling preference. */
+export interface DigestPreference {
+  /** Digest interval in minutes; must be within the bounded range. */
+  intervalMinutes: number;
+}
+
 /** Minimal configuration shape required by filtersMessage. */
 export type FiltersConfig = Partial<
   Pick<
@@ -53,7 +64,27 @@ export type FiltersConfig = Partial<
     | "channelPreviewMode"
     | "routes"
   >
->;
+> & {
+  /** Optional per-chat digest scheduling preferences, keyed by chat id. */
+  digestPreferences?: Record<string, DigestPreference>;
+};
+
+/**
+ * Validates a digest interval for a destination. Returns an error message
+ * when invalid, or null when the interval is acceptable.
+ */
+export function validateDigestInterval(intervalMinutes: number): string | null {
+  if (!Number.isFinite(intervalMinutes) || !Number.isInteger(intervalMinutes)) {
+    return "digest interval must be an integer number of minutes";
+  }
+  if (intervalMinutes < DIGEST_INTERVAL_MIN_MINUTES) {
+    return `digest interval must be at least ${DIGEST_INTERVAL_MIN_MINUTES} minutes`;
+  }
+  if (intervalMinutes > DIGEST_INTERVAL_MAX_MINUTES) {
+    return `digest interval must be at most ${DIGEST_INTERVAL_MAX_MINUTES} minutes`;
+  }
+  return null;
+}
 
 /**
  * Builds a MarkdownV2 formatted message describing the active notification filters.
@@ -63,17 +94,21 @@ export type FiltersConfig = Partial<
  * - Enabled/disabled event types
  * - Category allowlists
  * - Chat routing destinations (redacted)
+ * - Digest scheduling preferences per chat (when present). Critical
+ *   notifications are always delivered immediately and are not affected.
  */
 export function filtersMessage(config: FiltersConfig = {}): string {
   const flags: NotificationFeatureFlags =
     config.featureFlags ?? DEFAULT_FEATURE_FLAGS;
   const categories = config.notificationCategories ?? [];
+  const digestPreferences = config.digestPreferences ?? {};
 
   const isDefault =
     flags.enabled &&
     flags.market &&
     flags.squad &&
-    categories.length === 0;
+    categories.length === 0 &&
+    Object.keys(digestPreferences).length === 0;
 
   const defaultChat = config.chatId ?? config.chatIds?.[0];
   const marketChat = config.marketChatId || defaultChat;

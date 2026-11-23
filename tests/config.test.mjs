@@ -40,7 +40,7 @@ function withEnv(vars, fn) {
 
 function validBotEnv(overrides = {}) {
   return {
-    BOT_TOKEN: "123456789:" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    BOT_TOKEN: "123456789:" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     TELEGRAM_CHAT_ID: "-1001234567890",
     MARKET_CONTRACT_ID: VALID_CONTRACT_A,
     SQUAD_CONTRACT_ID: VALID_CONTRACT_B,
@@ -408,6 +408,59 @@ test("loadConfig: METRICS_PORT problem is collected alongside other problems", (
         err.problems.some((p) => p.includes("METRICS_PORT")),
         `Expected METRICS_PORT problem; got: ${JSON.stringify(err.problems)}`,
       );
+      return true;
+    });
+  });
+});
+
+// ── Atom feed ─────────────────────────────────────────────────────────────────
+
+test("loadConfig: Atom feed is disabled by default with a bounded retention cap", () => {
+  withEnv(
+    validBotEnv({
+      ATOM_FEED_ENABLED: undefined,
+      ATOM_FEED_MAX_ENTRIES: undefined,
+      ATOM_FEED_SELF_URL: undefined,
+    }),
+    () => {
+      const config = loadConfig();
+      assert.equal(config.atomFeedEnabled, false);
+      assert.equal(config.atomFeedMaxEntries, 50);
+      assert.equal(config.atomFeedSelfUrl, null);
+    },
+  );
+});
+
+test("loadConfig: ATOM_FEED_ENABLED=true enables the read-only feed", () => {
+  withEnv(validBotEnv({ ATOM_FEED_ENABLED: "true" }), () => {
+    assert.equal(loadConfig().atomFeedEnabled, true);
+  });
+});
+
+test("loadConfig: ATOM_FEED_MAX_ENTRIES=1 is the minimum accepted cap", () => {
+  withEnv(validBotEnv({ ATOM_FEED_MAX_ENTRIES: "1" }), () => {
+    assert.equal(loadConfig().atomFeedMaxEntries, 1);
+  });
+});
+
+test("loadConfig: ATOM_FEED_MAX_ENTRIES=0 is rejected", () => {
+  withEnv(validBotEnv({ ATOM_FEED_MAX_ENTRIES: "0" }), () => {
+    assert.throws(() => loadConfig(), (err) => {
+      assert.ok(err instanceof ConfigError);
+      assert.ok(err.problems.some((p) => p.includes("ATOM_FEED_MAX_ENTRIES")));
+      return true;
+    });
+  });
+});
+
+test("loadConfig: ATOM_FEED_SELF_URL accepts https and rejects http", () => {
+  withEnv(validBotEnv({ ATOM_FEED_SELF_URL: "https://example.invalid/atom" }), () => {
+    assert.equal(loadConfig().atomFeedSelfUrl, "https://example.invalid/atom");
+  });
+  withEnv(validBotEnv({ ATOM_FEED_SELF_URL: "http://example.invalid/atom" }), () => {
+    assert.throws(() => loadConfig(), (err) => {
+      assert.ok(err instanceof ConfigError);
+      assert.ok(err.problems.some((p) => p.includes("ATOM_FEED_SELF_URL")));
       return true;
     });
   });
