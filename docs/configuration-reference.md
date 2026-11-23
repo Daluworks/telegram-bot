@@ -39,13 +39,15 @@ The `.env.example` file contains the base configuration. The bot uses strict env
 - For full details on defaults, evaluation precedence, and worked examples, see [Notification Filters](notification-filters.md).
 - **Zero active routes**: When every configured route is disabled (`NOTIFY_ENABLED=false`, or both `NOTIFY_MARKET` and `NOTIFY_SQUAD` set to `false`), the notifier reports an explicit `no-active-routes` status instead of a healthy delivery status. No notification is ever reported as delivered in this state; each would-be event is counted as suppressed and logged at warn level with the reason `no active routes`.
 
-### Digest Scheduling Preferences
-Digest batching is configured per destination (chat or channel) so that non-critical notifications can be grouped and delivered on a schedule instead of immediately.
-- `DIGEST_SCHEDULES`: Optional JSON object mapping a destination ID (numeric chat ID or `@channelusername`) to a digest interval in minutes, e.g. `{"-1001234567890":15,"@mimir_updates":60}`. Destinations not listed receive notifications immediately (the existing behavior).
-- Each interval must be an integer between `5` and `1440` (inclusive). Values outside this range, non-integer values, or a malformed JSON object fail fast at startup with a configuration error listing the offending entry.
-- Interval validation is applied per destination; a destination must be configured exactly once.
-- **Critical notifications are never delayed.** Events that are classified as critical (for example, those affecting funded state or requiring immediate attention) are dispatched immediately to their destination regardless of any digest schedule. Only non-critical notifications are grouped into digests.
-- Digest delivery is best-effort: the bot does not claim exactly-once delivery. If a digest flush fails, it is logged and retried on the next scheduled window.
+### Shareable Archive Privacy Review
+Shareable event archives (JSONL captures produced by the archive helpers) can be checked before they leave the operator's machine. The privacy review mode scans an archive file and produces a deterministic findings report. It is fully offline: it performs no network calls to Telegram, Stellar RPC, or Horizon, and it never modifies the archive.
+
+- **Detected findings**:
+  - `private_chat_id`: Telegram private chat identifiers (numeric IDs that are positive, i.e. user-scoped rather than group/channel IDs, and `@username`-style handles found under chat-identifying keys).
+  - `secret_value`: secret-shaped values, such as Telegram bot tokens (`<digits>:<35 chars>`), `S...` Stellar secret seeds, and values under secret-named keys (`token`, `secret`, `password`, `api_key`, `private_key`, etc.).
+- **Output**: findings are sorted by line number, then kind, then column, so repeated runs over the same input produce byte-identical reports. Each finding records the line, JSON path, kind, and a redacted preview; raw secret or chat values are never printed in the report.
+- **Failure handling**: malformed JSONL lines are reported as `parse_error` findings rather than aborting the scan.
+- **Usage**: run the review on an archive path before sharing it. A non-empty findings list means the archive should be scrubbed before distribution.
 
 ### Health Reporting
 - `HEALTH_HOST` & `HEALTH_PORT`: Binds a local HTTP endpoint for health probes (e.g., Kubernetes liveness probes). Set port to 0 to disable.
